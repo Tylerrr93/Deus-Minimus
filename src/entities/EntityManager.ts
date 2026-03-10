@@ -2,7 +2,7 @@
 // ENTITY MANAGER
 // ============================================================
 
-import { EntityState, EntityType, createEntity, createGenes } from './Entity';
+import { EntityState, EntityRole, createEntity, createGenes, inheritSkills } from './Entity';
 import { BEHAVIOUR_PIPELINES, BehaviourContext, BehaviourFn } from './Behaviours';
 import { World } from '../world/World';
 import { TILE_PASSABLE } from '../world/Tile';
@@ -15,9 +15,9 @@ export class EntityManager {
   private aliveIds:  Set<number>              = new Set();
   private grid:      SpatialGrid;
 
-  private _totalBirths         = 0;
-  private _totalDeaths         = 0;
-  private _resourcesExtracted  = 0;
+  private _totalBirths        = 0;
+  private _totalDeaths        = 0;
+  private _resourcesExtracted = 0;
 
   constructor(
     private readonly world:       World,
@@ -28,11 +28,11 @@ export class EntityManager {
 
   // ── Spawning ─────────────────────────────────────────────
 
-  spawn(type: EntityType, x: number, y: number, genes?: any): EntityState | null {
+  spawn(type: EntityRole, x: number, y: number, genes?: any, skills?: any): EntityState | null {
     const tile = this.world.getTile(x, y);
     if (!tile || !TILE_PASSABLE[tile.type]) return null;
 
-    const e = createEntity(type, x, y, genes);
+    const e = createEntity(type, x, y, genes, skills);
     this.entities.set(e.id, e);
     this.aliveIds.add(e.id);
     this.grid.insert(e.id, x, y);
@@ -41,7 +41,7 @@ export class EntityManager {
     return e;
   }
 
-  spawnAtRandom(type: EntityType, count: number, genes?: any): void {
+  spawnAtRandom(type: EntityRole, count: number, genes?: any): void {
     let spawned = 0, attempts = count * 20;
     while (spawned < count && attempts-- > 0) {
       const tile = this.world.getRandomPassableTile();
@@ -52,16 +52,22 @@ export class EntityManager {
   // ── Tick ─────────────────────────────────────────────────
 
   tick(tickNum: number): void {
+    const nowMs = performance.now();
     const toRemove: number[] = [];
-    const toSpawn: Array<{ type: EntityType; x: number; y: number; genes: any; parentId: number }> = [];
+    const toSpawn: Array<{
+      x: number; y: number;
+      genes: any; skills: any; parentId: number;
+      settlementId: number; homeSettlement: [number,number]|null;
+    }> = [];
 
     for (const id of this.aliveIds) {
       const entity = this.entities.get(id);
       if (!entity || !entity.alive) continue;
 
+      // All entities share the single universal pipeline
       const pipeline: BehaviourFn[] = BEHAVIOUR_PIPELINES[entity.type] ?? [];
 
-      const nearIds    = this.grid.query(entity.x, entity.y, ENTITY.VISION_RANGE);
+      const nearIds = this.grid.query(entity.x, entity.y, ENTITY.VISION_RANGE);
       const neighbours: EntityState[] = [];
       for (const nid of nearIds) {
         if (nid === id) continue;
@@ -73,8 +79,11 @@ export class EntityManager {
         entity, world: this.world, neighbours,
         allEntities: this.entities,
         tick: tickNum,
+        nowMs,
         settlements: this.settlements,
       };
+
+      let didBuild = false;
 
       for (const behaviour of pipeline) {
         const result = behaviour(ctx);
@@ -93,13 +102,16 @@ export class EntityManager {
         if (result.reproduce) {
           const near = this.world.findPassableTileNear(entity.x, entity.y, 3);
           if (near) {
-            const childType   = this.specializeChild(entity.type, entity);
-            const otherParent = result.reproduceWith ? this.entities.get(result.reproduceWith) : undefined;
+            const otherParent = result.reproduceWith
+              ? this.entities.get(result.reproduceWith)
+              : undefined;
             toSpawn.push({
-              type: childType,
               x: near.x, y: near.y,
-              genes: createGenes(entity.genes, otherParent?.genes),
+              genes:  createGenes(entity.genes, otherParent?.genes),
+              skills: inheritSkills(entity.skills, otherParent?.skills),
               parentId: entity.id,
+              settlementId:    entity.settlementId,
+              homeSettlement:  entity.memory.homeSettlement,
             });
           }
         }
@@ -113,6 +125,7 @@ export class EntityManager {
         }
 
         if (result.workOnProject) {
+          didBuild = true;
           const { projectId, tileX, tileY } = result.workOnProject;
           this.settlements.advanceProject(projectId, tileX, tileY, entity.id, SETTLEMENT.BUILD_RATE);
         }
@@ -124,8 +137,8 @@ export class EntityManager {
         }
       }
 
-      // Clear building project assignment if not actively building this tick
-      if (entity.actionAnim.type !== 'build') {
+      // Clear building project if entity didn't actively build this tick
+      if (!didBuild) {
         entity.buildingProjectId = -1;
       }
     }
@@ -145,15 +158,12 @@ export class EntityManager {
 
     // Births
     for (const s of toSpawn) {
-      const born = this.spawn(s.type, s.x, s.y, s.genes);
+      const born = this.spawn('wanderer', s.x, s.y, s.genes, s.skills);
       if (born) {
         born.isChild  = true;
         born.parentId = s.parentId;
-        const parent  = this.entities.get(s.parentId);
-        if (parent) {
-          born.settlementId          = parent.settlementId;
-          born.memory.homeSettlement = parent.memory.homeSettlement;
-        }
+        born.settlementId          = s.settlementId;
+        born.memory.homeSettlement = s.homeSettlement;
         if (born.settlementId !== -1) {
           const settlement = this.settlements.getById(born.settlementId);
           if (settlement) settlement.population++;
@@ -167,32 +177,12 @@ export class EntityManager {
   private moveEntity(entity: EntityState, nx: number, ny: number): void {
     const newTile = this.world.getTile(nx, ny);
     if (!newTile || !TILE_PASSABLE[newTile.type] || newTile.occupied) return;
-
     const oldTile = this.world.getTile(entity.x, entity.y);
     if (oldTile) oldTile.occupied = false;
-
     this.grid.move(entity.id, entity.x, entity.y, nx, ny);
-    entity.x = nx;
-    entity.y = ny;
+    entity.x = nx; entity.y = ny;
     newTile.occupied = true;
-    entity.energy   -= 0.0005;
-  }
-
-  // ── Specialization ───────────────────────────────────────
-
-  private specializeChild(parentType: EntityType, parent: EntityState): EntityType {
-    if (parentType === 'hunter_gatherer') {
-      if (parent.settlementId !== -1 && Math.random() < 0.35) return 'villager';
-    }
-    if (parentType === 'villager') {
-      const g = parent.genes;
-      if (g.creativity > 0.55 && Math.random() < 0.12) return 'farmer';
-      if (g.strength   > 0.55 && Math.random() < 0.12) return 'craftsman';
-      if (g.strength   > 0.65 && Math.random() < 0.07) return 'warrior';
-      if (g.sociability > 0.65 && Math.random() < 0.05) return 'merchant';
-      if (g.intelligence > 0.65 && Math.random() < 0.04) return 'scholar';
-    }
-    return parentType;
+    entity.energy -= 0.0005;
   }
 
   // ── Settlement assignment ────────────────────────────────
