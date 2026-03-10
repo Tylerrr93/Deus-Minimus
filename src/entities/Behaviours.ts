@@ -1,10 +1,11 @@
 // ============================================================
 // BEHAVIOURS — discrete behaviour units for civilization entities.
-// Each function is pure: reads context, returns a result delta.
-// StageManager gates which behaviours are active via hasMechanic().
 // ============================================================
 
-import { EntityState, EntityType } from './Entity';
+import {
+  EntityState, EntityType, isAttractedTo, canReproduce,
+  rollOrientation, rollRelationshipStyle,
+} from './Entity';
 import { World } from '../world/World';
 import { TILE_FOOD_VALUE, TILE_PASSABLE } from '../world/Tile';
 import { ENTITY } from '../config/constants';
@@ -13,22 +14,24 @@ import { SettlementManager } from './SettlementManager';
 export interface BehaviourContext {
   entity: EntityState;
   world: World;
-  neighbours: EntityState[];   // pre-filtered via spatial grid — already cheap
+  neighbours: EntityState[];
+  allEntities: Map<number, EntityState>;
   tick: number;
-  hasMechanic: (name: string) => boolean;
   settlements: SettlementManager;
 }
 
 export type BehaviourResult = {
   dx?: number;
   dy?: number;
-  eat?: number;                             // direct energy restore from tile
+  eat?: number;
   reproduce?: boolean;
+  reproduceWith?: number;
   die?: boolean;
   extractResource?: { type: string; amount: number };
-  depositFood?: number;                     // carrying food amount to deposit
+  depositFood?: number;
   depositResource?: { type: 'stone' | 'wood' | 'iron'; amount: number };
-  researchTick?: number;                    // tech point contribution
+  researchTick?: number;
+  foundCamp?: boolean;
 };
 
 // ── Movement helpers ─────────────────────────────────────────
@@ -40,12 +43,14 @@ function randomMove(): { dx: number; dy: number } {
 }
 
 function moveToward(ex: number, ey: number, tx: number, ty: number): { dx: number; dy: number } {
-  const dx = Math.sign(tx - ex);
-  const dy = Math.sign(ty - ey);
-  return { dx, dy };
+  return { dx: Math.sign(tx - ex), dy: Math.sign(ty - ey) };
 }
 
-// ── Shared core behaviours ───────────────────────────────────
+function taxiDist(ax: number, ay: number, bx: number, by: number): number {
+  return Math.abs(ax - bx) + Math.abs(ay - by);
+}
+
+// ── Core behaviours ──────────────────────────────────────────
 
 export function behaviourAge(ctx: BehaviourContext): BehaviourResult {
   ctx.entity.age++;
@@ -53,13 +58,54 @@ export function behaviourAge(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-/** Energy drain per tick. Resilience reduces the rate. */
+/** Tick down action animation — keeps it alive for a few ticks */
+export function behaviourAnimTick(ctx: BehaviourContext): BehaviourResult {
+  const a = ctx.entity.actionAnim;
+  if (a.type !== null) {
+    a.progress = (a.progress + 1) % 8;
+    // Clear after one cycle
+    if (a.progress === 0) a.type = null;
+  }
+  return {};
+}
+
+/** Child grows up at SPECIALIZE_AGE; before that it is smaller and follows its parent. */
+export function behaviourGrow(ctx: BehaviourContext): BehaviourResult {
+  const { entity, allEntities } = ctx;
+  if (!entity.isChild) return {};
+
+  if (entity.age >= ENTITY.SPECIALIZE_AGE) {
+    entity.isChild = false;
+    entity.parentId = -1;
+    // Assign social identity
+    entity.social.orientation       = rollOrientation(entity.genes);
+    entity.social.relationshipStyle = rollRelationshipStyle(entity.genes);
+    return {};
+  }
+
+  // Follow parent
+  if (entity.parentId !== -1) {
+    const parent = allEntities.get(entity.parentId);
+    if (!parent || !parent.alive) {
+      entity.parentId = -1;
+      return {};
+    }
+    const d = taxiDist(entity.x, entity.y, parent.x, parent.y);
+    if (d > 1) return moveToward(entity.x, entity.y, parent.x, parent.y);
+    return {};
+  }
+
+  return {};
+}
+
 export function behaviourHunger(ctx: BehaviourContext): BehaviourResult {
   const { entity } = ctx;
-  const rate = ENTITY.HUNGER_RATE * (1 - entity.genes.resilience * 0.3);
+  // Children and resting entities drain less
+  const childDiscount  = entity.isChild ? 0.5 : 1.0;
+  const stateDiscount  = (entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') ? 0.75 : 1.0;
+  const rate = ENTITY.HUNGER_RATE * (1 - entity.genes.resilience * 0.3) * childDiscount * stateDiscount;
   entity.energy -= rate;
 
-  // Before starvation, try to eat from home settlement storage
   if (entity.energy < 0.35 && entity.settlementId !== -1) {
     const s = ctx.settlements.getById(entity.settlementId);
     if (s && s.foodStorage > 0.5) {
@@ -68,57 +114,278 @@ export function behaviourHunger(ctx: BehaviourContext): BehaviourResult {
     }
   }
 
+  if (entity.energy < 0.25) {
+    entity.social.stressTicks = Math.min(120, entity.social.stressTicks + 1);
+  } else if (entity.energy > 0.5) {
+    entity.social.stressTicks = Math.max(0, entity.social.stressTicks - 1);
+  }
+
+  // Survival overrides social states
+  if (entity.energy < 0.35 && entity.social.socialState !== 'idle') {
+    entity.social.socialState = 'idle';
+    entity.social.socialStateTicks = 0;
+  }
+
   if (entity.energy <= 0) return { die: true };
   return {};
 }
 
-export function behaviourReproduce(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('reproduction')) return {};
-  const { entity } = ctx;
-  if (entity.reproductionCooldown > 0) { entity.reproductionCooldown--; return {}; }
-  if (entity.energy < ENTITY.REPRO_ENERGY_THRESHOLD) return {};
+// ── Social / mating / friendship ─────────────────────────────
 
-  const mate = ctx.neighbours.find(n =>
-    n.alive && n.type === entity.type &&
-    n.tribeId === entity.tribeId &&
-    n.reproductionCooldown === 0 &&
-    n.energy > ENTITY.REPRO_ENERGY_THRESHOLD
-  );
+export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
+  const { entity, neighbours, allEntities } = ctx;
+  const s = entity.social;
 
-  if (mate || entity.genes.sociability > 0.85) {
-    entity.reproductionCooldown = ENTITY.REPRO_COOLDOWN_TICKS;
-    entity.energy *= 0.65;
-    return { reproduce: true };
+  // Children do not socialise romantically
+  if (entity.isChild) return {};
+  if (!s.orientation) return {};
+
+  // ── 1. Clean up dead entries ──────────────────────────────
+  s.partnerIds       = s.partnerIds.filter(id => allEntities.get(id)?.alive);
+  s.affairPartnerIds = s.affairPartnerIds.filter(id => allEntities.get(id)?.alive);
+  s.friendIds        = s.friendIds.filter(id => allEntities.get(id)?.alive);
+  if (s.followingId !== null && !allEntities.get(s.followingId)?.alive) s.followingId = null;
+
+  // ── 2. Partner proximity tracking ────────────────────────
+  const allPartnerIds = [...s.partnerIds, ...s.affairPartnerIds];
+  const anyPartnerNearby = allPartnerIds.some(pid => {
+    const p = allEntities.get(pid);
+    return p?.alive && taxiDist(entity.x, entity.y, p.x, p.y) <= 5;
+  });
+  if (anyPartnerNearby) {
+    s.ticksAloneFromPartners = 0;
+  } else if (allPartnerIds.length > 0) {
+    s.ticksAloneFromPartners++;
   }
+
+  // ── 3. Breakups ───────────────────────────────────────────
+  if (s.ticksAloneFromPartners > 300 && s.partnerIds.length > 0) {
+    _dissolvePartnership(entity, s.partnerIds[0], allEntities);
+    s.ticksAloneFromPartners = 0;
+  }
+  if (s.stressTicks > 60 && s.partnerIds.length > 0 && Math.random() < 0.006) {
+    _dissolvePartnership(entity, s.partnerIds[s.partnerIds.length - 1], allEntities);
+    s.stressTicks = 0;
+  }
+
+  // ── 4. Affair discovery ───────────────────────────────────
+  if (s.affairPartnerIds.length > 0 && s.partnerIds.length > 0) {
+    const affairNear = s.affairPartnerIds.some(aid => {
+      const a = allEntities.get(aid);
+      return a?.alive && taxiDist(entity.x, entity.y, a.x, a.y) <= 3;
+    });
+    const mainNear = s.partnerIds.some(pid => {
+      const p = allEntities.get(pid);
+      return p?.alive && taxiDist(entity.x, entity.y, p.x, p.y) <= 3;
+    });
+    if (affairNear && mainNear && Math.random() < 0.10) {
+      const mainId = s.partnerIds[0];
+      _dissolvePartnership(entity, mainId, allEntities);
+      const affairId = s.affairPartnerIds[0];
+      s.affairPartnerIds = s.affairPartnerIds.filter(id => id !== affairId);
+      s.partnerIds.push(affairId);
+      const affair = allEntities.get(affairId);
+      if (affair) {
+        affair.social.affairPartnerIds = affair.social.affairPartnerIds.filter(id => id !== entity.id);
+        if (!affair.social.partnerIds.includes(entity.id)) affair.social.partnerIds.push(entity.id);
+      }
+      s.stressTicks += 25;
+    }
+  }
+
+  // ── 5. Cheating ───────────────────────────────────────────
+  if (s.cheatCooldown > 0) {
+    s.cheatCooldown--;
+  } else if (
+    s.relationshipStyle === 'monogamous' && s.partnerIds.length >= 1 &&
+    s.affairPartnerIds.length === 0 && s.ticksAloneFromPartners > 80 &&
+    entity.energy > 0.5
+  ) {
+    const candidate = neighbours.find(n =>
+      n.alive && !n.isChild && n.social.orientation &&
+      !s.partnerIds.includes(n.id) && !s.affairPartnerIds.includes(n.id) &&
+      isAttractedTo(entity, n) && isAttractedTo(n, entity) &&
+      taxiDist(entity.x, entity.y, n.x, n.y) <= 3
+    );
+    if (candidate && Math.random() < entity.genes.sociability * 0.15) {
+      s.affairPartnerIds.push(candidate.id);
+      candidate.social.affairPartnerIds.push(entity.id);
+      s.cheatCooldown = 200;
+    }
+  }
+
+  // ── 6. Social state ───────────────────────────────────────
+  s.socialStateTicks++;
+  if (s.socialState === 'chatting') {
+    entity.energy = Math.min(1, entity.energy + 0.0004);
+    if (s.socialStateTicks >= 15 + Math.floor(entity.genes.sociability * 25)) {
+      s.socialState = 'idle'; s.socialStateTicks = 0;
+    }
+    return {};
+  }
+  if (s.socialState === 'relaxing') {
+    entity.energy = Math.min(1, entity.energy + 0.0008);
+    if (s.socialStateTicks >= 30 + Math.floor(entity.genes.resilience * 35)) {
+      s.socialState = 'idle'; s.socialStateTicks = 0;
+    }
+    return {};
+  }
+
+  // ── 7. Follow partner (lower dominance) ──────────────────
+  if (s.followingId !== null) {
+    const leader = allEntities.get(s.followingId);
+    if (leader) {
+      const d = taxiDist(entity.x, entity.y, leader.x, leader.y);
+      if (d > 2) return moveToward(entity.x, entity.y, leader.x, leader.y);
+    }
+  }
+
+  // ── 8. Reproduce with established partner ────────────────
+  if (entity.reproductionCooldown > 0) {
+    entity.reproductionCooldown--;
+  } else if (entity.energy >= ENTITY.REPRO_ENERGY_THRESHOLD) {
+    for (const pid of [...s.partnerIds, ...s.affairPartnerIds]) {
+      const partner = allEntities.get(pid);
+      if (!partner?.alive || partner.reproductionCooldown > 0) continue;
+      if (partner.energy < ENTITY.REPRO_ENERGY_THRESHOLD) continue;
+      // Biological constraint: must be opposite sex
+      if (!canReproduce(entity, partner)) continue;
+      if (taxiDist(entity.x, entity.y, partner.x, partner.y) <= 3) {
+        entity.reproductionCooldown = ENTITY.REPRO_COOLDOWN_TICKS;
+        entity.energy *= 0.82;
+        return { reproduce: true, reproduceWith: pid };
+      }
+    }
+  }
+
+  // ── 9. Chat / relax with friends ─────────────────────────
+  if (entity.energy > 0.55 && s.socialState === 'idle') {
+    const nearFriend = neighbours.find(n =>
+      !n.isChild && n.alive && s.friendIds.includes(n.id) &&
+      n.social.socialState === 'idle' &&
+      taxiDist(entity.x, entity.y, n.x, n.y) <= 2
+    );
+    if (nearFriend && Math.random() < entity.genes.sociability * 0.04) {
+      s.socialState = 'chatting'; s.socialStateTicks = 0;
+      nearFriend.social.socialState = 'chatting'; nearFriend.social.socialStateTicks = 0;
+      return {};
+    }
+    if (Math.random() < 0.004) { s.socialState = 'relaxing'; s.socialStateTicks = 0; return {}; }
+  }
+
+  // ── 10. Make friends ──────────────────────────────────────
+  if (s.friendIds.length < 4) {
+    const candidate = neighbours.find(n =>
+      !n.isChild && n.alive && !s.friendIds.includes(n.id) && !s.partnerIds.includes(n.id) &&
+      n.id !== entity.id && taxiDist(entity.x, entity.y, n.x, n.y) <= 3
+    );
+    if (candidate && Math.random() < entity.genes.sociability * 0.012) {
+      s.friendIds.push(candidate.id);
+      if (!candidate.social.friendIds.includes(entity.id)) candidate.social.friendIds.push(entity.id);
+    }
+  }
+
+  // ── 11. Seek romantic partner ─────────────────────────────
+  if (s.seekCooldown > 0) { s.seekCooldown--; return {}; }
+
+  const maxPartners = s.relationshipStyle === 'polyamorous' ? 3 : 1;
+  if (s.partnerIds.length < maxPartners) {
+    const candidate = neighbours.find(n => {
+      if (n.isChild || !n.alive || !n.social.orientation) return false;
+      if (s.partnerIds.includes(n.id) || s.affairPartnerIds.includes(n.id)) return false;
+      if (!isAttractedTo(entity, n) || !isAttractedTo(n, entity)) return false;
+      const nMax = n.social.relationshipStyle === 'polyamorous' ? 3 : 1;
+      if (n.social.partnerIds.length >= nMax) return false;
+      return taxiDist(entity.x, entity.y, n.x, n.y) <= 5;
+    });
+    if (candidate) {
+      s.partnerIds.push(candidate.id);
+      candidate.social.partnerIds.push(entity.id);
+      if (s.dominanceScore < candidate.social.dominanceScore) s.followingId = candidate.id;
+      else if (candidate.social.dominanceScore < s.dominanceScore) candidate.social.followingId = entity.id;
+      s.seekCooldown = 40 + Math.floor(Math.random() * 30);
+      return {};
+    }
+    // Long-range: drift toward distant compatible entity
+    if (entity.age > ENTITY.SPECIALIZE_AGE + 5 && entity.energy > 0.45) {
+      const distant = neighbours.find(n =>
+        !n.isChild && n.alive && n.social.orientation && isAttractedTo(entity, n) &&
+        n.social.partnerIds.length < (n.social.relationshipStyle === 'polyamorous' ? 3 : 1)
+      );
+      if (distant) { s.seekCooldown = 10; return moveToward(entity.x, entity.y, distant.x, distant.y); }
+    }
+  }
+
+  s.seekCooldown = 20;
   return {};
 }
 
-// ── Hunter-Gatherer behaviours ───────────────────────────────
+function _dissolvePartnership(entity: EntityState, partnerId: number, allEntities: Map<number, EntityState>): void {
+  entity.social.partnerIds      = entity.social.partnerIds.filter(id => id !== partnerId);
+  entity.social.affairPartnerIds = entity.social.affairPartnerIds.filter(id => id !== partnerId);
+  if (entity.social.followingId === partnerId) entity.social.followingId = null;
+  const partner = allEntities.get(partnerId);
+  if (partner) {
+    partner.social.partnerIds      = partner.social.partnerIds.filter(id => id !== entity.id);
+    partner.social.affairPartnerIds = partner.social.affairPartnerIds.filter(id => id !== entity.id);
+    if (partner.social.followingId === entity.id) partner.social.followingId = null;
+    partner.social.stressTicks += 15;
+  }
+}
+
+// ── Camp founding ─────────────────────────────────────────────
 
 /**
- * Core gather loop: go out to food tiles, fill carry capacity, return to settlement.
- * Without a settlement, eat in-place.
+ * When an entity has plenty of food, is in a tribe, and no camp exists nearby,
+ * a high-ambition individual will naturally start one.
  */
+export function behaviourFoundCamp(ctx: BehaviourContext): BehaviourResult {
+  const { entity, neighbours, world, settlements } = ctx;
+  if (entity.isChild) return {};
+  if (entity.settlementId !== -1) return {};  // already in a settlement
+  if (entity.tribeId === -1) return {};
+  if (entity.energy < 0.72) return {};        // only when fed and comfortable
+  if (entity.genes.ambition < 0.38) return {};
+
+  // Only one attempt every so often
+  if (entity.age % 30 !== 0) return {};
+
+  // Count nearby tribe members
+  const tribeNearby = neighbours.filter(n =>
+    !n.isChild && n.tribeId === entity.tribeId && taxiDist(entity.x, entity.y, n.x, n.y) <= 12
+  );
+  if (tribeNearby.length < 2) return {};
+
+  // Check no existing settlement is close
+  const allSettlements = settlements.getAll();
+  const tooClose = allSettlements.some(s => taxiDist(entity.x, entity.y, s.x, s.y) < 18);
+  if (tooClose) return {};
+
+  return { foundCamp: true };
+}
+
+// ── Gathering behaviours ──────────────────────────────────────
+
 export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, settlements } = ctx;
+  const s = entity.social;
+  if (entity.isChild) return {};
+  if ((s.socialState === 'chatting' || s.socialState === 'relaxing') && entity.energy > 0.4) return {};
 
-  // ── Returning phase: head home to deposit ────────────────
   if (entity.memory.returning && entity.settlementId !== -1) {
-    const s = settlements.getById(entity.settlementId);
-    if (!s) { entity.memory.returning = false; return {}; }
-
-    const dist = Math.abs(s.x - entity.x) + Math.abs(s.y - entity.y);
-    if (dist <= 1) {
-      // Arrived at settlement — deposit
+    const settlement = settlements.getById(entity.settlementId);
+    if (!settlement) { entity.memory.returning = false; return {}; }
+    const d = taxiDist(entity.x, entity.y, settlement.x, settlement.y);
+    if (d <= 1) {
       entity.memory.returning = false;
       const deposited = entity.carryingFood;
       entity.carryingFood = 0;
       return { depositFood: deposited };
     }
-    return moveToward(entity.x, entity.y, s.x, s.y);
+    return moveToward(entity.x, entity.y, settlement.x, settlement.y);
   }
 
-  // ── Eat in-place if starving and no settlement ────────────
+  // Eat in-place when starving with no camp
   if (entity.energy < 0.4 && entity.settlementId === -1) {
     const tile = world.getTile(entity.x, entity.y);
     if (tile) {
@@ -126,17 +393,15 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
       if (food) {
         const extracted = world.extractResource(entity.x, entity.y, 'food', 0.3);
         entity.memory.ticksSinceFood = 0;
+        entity.actionAnim = { type: 'gather', progress: 0 };
         return { eat: extracted };
       }
     }
   }
 
-  // ── Gathering phase ───────────────────────────────────────
-  if (entity.energy > 0.5) {
-    // Scan for food with intelligence-based range
+  if (entity.energy > 0.45) {
     const range = Math.ceil(3 + entity.genes.intelligence * 5);
     let bestTile = null, bestScore = -1;
-
     for (let dy = -range; dy <= range; dy++) {
       for (let dx = -range; dx <= range; dx++) {
         const t = world.getTile(entity.x + dx, entity.y + dy);
@@ -148,17 +413,16 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
         }
       }
     }
-
     if (bestTile) {
       entity.memory.lastFoodTile = [bestTile.x, bestTile.y];
-      // If standing on food, extract and carry
       if (bestTile.x === entity.x && bestTile.y === entity.y) {
         const extracted = world.extractResource(entity.x, entity.y, 'food', 0.5);
         if (extracted > 0) {
           entity.carryingFood += extracted;
           entity.memory.ticksSinceFood = 0;
-          // If carrying enough, head home
-          if (entity.carryingFood >= ENTITY.CARRY_CAPACITY * 0.8 && entity.settlementId !== -1) {
+          entity.actionAnim = { type: 'gather', progress: 0 };
+          // Camp storage: deposit when carrying limit reached
+          if (entity.carryingFood >= ENTITY.CARRY_CAPACITY && entity.settlementId !== -1) {
             entity.memory.returning = true;
           }
         }
@@ -166,39 +430,30 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
       }
       return moveToward(entity.x, entity.y, bestTile.x, bestTile.y);
     }
-
-    // Use remembered food location
     if (entity.memory.lastFoodTile) {
       const [fx, fy] = entity.memory.lastFoodTile;
-      if (Math.abs(fx - entity.x) + Math.abs(fy - entity.y) < 2) {
-        entity.memory.lastFoodTile = null;
-      } else {
-        return moveToward(entity.x, entity.y, fx, fy);
-      }
+      if (taxiDist(entity.x, entity.y, fx, fy) < 2) entity.memory.lastFoodTile = null;
+      else return moveToward(entity.x, entity.y, fx, fy);
     }
-
-    // Drift toward fertile terrain
     const tile = world.getTile(entity.x, entity.y);
     const fv = TILE_FOOD_VALUE[tile?.type ?? 'plains'];
     if (fv < 0.3) return randomMove();
   }
 
-  // Low energy + no food nearby — wander
   entity.memory.ticksSinceFood++;
   if (entity.memory.ticksSinceFood > 80) return randomMove();
   return {};
 }
 
-/** Hunter: actively pursues prey (other species from a separate pool are gone,
- *  so "hunting" means finding the richest food tile in an extended radius). */
 export function behaviourHunt(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('hunting')) return {};
   const { entity, world } = ctx;
+  if (entity.isChild) return {};
   if (entity.energy > 0.6) return {};
+  const s = entity.social;
+  if ((s.socialState === 'chatting' || s.socialState === 'relaxing') && entity.energy > 0.4) return {};
 
   const range = Math.ceil(4 + entity.genes.strength * 4);
   let bestTile = null, bestScore = -1;
-
   for (let dy = -range; dy <= range; dy++) {
     for (let dx = -range; dx <= range; dx++) {
       const t = world.getTile(entity.x + dx, entity.y + dy);
@@ -214,61 +469,51 @@ export function behaviourHunt(ctx: BehaviourContext): BehaviourResult {
   if (bestTile.x === entity.x && bestTile.y === entity.y) {
     const extracted = world.extractResource(entity.x, entity.y, 'food', 0.4 + entity.genes.strength * 0.3);
     entity.carryingFood += extracted;
+    entity.actionAnim = { type: 'gather', progress: 0 };
     return {};
   }
   return moveToward(entity.x, entity.y, bestTile.x, bestTile.y);
 }
 
-/** Stay near home settlement; wander within a radius. */
 export function behaviourTerritorialWander(ctx: BehaviourContext): BehaviourResult {
   const { entity } = ctx;
+  if (entity.isChild) return {};
+  if (entity.social.followingId !== null) return {};
+  if (entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') return {};
   if (entity.memory.returning) return {};
 
   if (entity.memory.homeSettlement) {
     const [hx, hy] = entity.memory.homeSettlement;
-    const dist = Math.abs(hx - entity.x) + Math.abs(hy - entity.y);
-    if (dist > 20 && Math.random() < 0.3) {
-      return moveToward(entity.x, entity.y, hx, hy);
-    }
+    const d = taxiDist(entity.x, entity.y, hx, hy);
+    if (d > 20 && Math.random() < 0.3) return moveToward(entity.x, entity.y, hx, hy);
   }
-
   if (Math.random() < 0.4) return randomMove();
   return {};
 }
 
-// ── Villager / Farmer behaviours ─────────────────────────────
-
-/** Farmers improve plains tiles into farms and produce extra food. */
 export function behaviourFarm(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('farming')) return {};
   const { entity, world } = ctx;
+  if (entity.isChild) return {};
   if (entity.type !== 'farmer' && entity.type !== 'villager') return {};
+  if ((entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') && entity.energy > 0.4) return {};
 
   const tile = world.getTile(entity.x, entity.y);
   if (!tile) return {};
-
-  // Improve an adjacent plains tile into a farm
   if (tile.type === 'plains' && !tile.improvement && Math.random() < 0.002) {
     tile.improvement = 'farm';
-    // Farms have higher food regen
     const food = tile.resources.find(r => r.type === 'food');
     if (food) food.regenRate *= 2.5;
     return {};
   }
-
-  // Harvest from a farm
   if (tile.improvement === 'farm') {
     const extracted = world.extractResource(entity.x, entity.y, 'food', 0.6);
     if (extracted > 0) {
       entity.carryingFood += extracted;
-      if (entity.carryingFood >= ENTITY.CARRY_CAPACITY && entity.settlementId !== -1) {
-        entity.memory.returning = true;
-      }
+      entity.actionAnim = { type: 'farm', progress: 0 };
+      if (entity.carryingFood >= ENTITY.CARRY_CAPACITY && entity.settlementId !== -1) entity.memory.returning = true;
     }
     return {};
   }
-
-  // Walk to nearest farm or plains
   const range = 6;
   for (let dy = -range; dy <= range; dy++) {
     for (let dx = -range; dx <= range; dx++) {
@@ -281,16 +526,14 @@ export function behaviourFarm(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-// ── Craftsman behaviours ─────────────────────────────────────
-
 export function behaviourMine(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('basic_tools')) return {};
   const { entity, world } = ctx;
+  if (entity.isChild) return {};
   if (entity.type !== 'craftsman') return {};
+  if ((entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') && entity.energy > 0.4) return {};
 
   const tile = world.getTile(entity.x, entity.y);
   if (!tile) return {};
-
   for (const resType of ['stone', 'wood', 'iron'] as const) {
     const res = tile.resources.find(r => r.type === resType && r.amount > 0);
     if (res && Math.random() < 0.05) {
@@ -298,15 +541,12 @@ export function behaviourMine(ctx: BehaviourContext): BehaviourResult {
       if (extracted > 0) {
         entity.carryingResource += extracted;
         entity.carryingResourceType = resType;
-        if (entity.carryingResource >= ENTITY.CARRY_CAPACITY * 0.8 && entity.settlementId !== -1) {
-          entity.memory.returning = true;
-        }
+        entity.actionAnim = { type: 'mine', progress: 0 };
+        if (entity.carryingResource >= ENTITY.CARRY_CAPACITY && entity.settlementId !== -1) entity.memory.returning = true;
         return { extractResource: { type: resType, amount: extracted } };
       }
     }
   }
-
-  // Walk toward resource-bearing tile
   const range = 8;
   for (let dy = -range; dy <= range; dy++) {
     for (let dx = -range; dx <= range; dx++) {
@@ -320,20 +560,15 @@ export function behaviourMine(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-/** Craftsman deposits resources on return to settlement. */
 export function behaviourReturnResources(ctx: BehaviourContext): BehaviourResult {
   const { entity, settlements } = ctx;
-  if (!entity.memory.returning || entity.carryingResource <= 0) return {};
-  if (entity.settlementId === -1) return {};
-
+  if (entity.isChild) return {};
+  if (!entity.memory.returning || entity.carryingResource <= 0 || entity.settlementId === -1) return {};
   const s = settlements.getById(entity.settlementId);
   if (!s) { entity.memory.returning = false; return {}; }
-
-  const dist = Math.abs(s.x - entity.x) + Math.abs(s.y - entity.y);
-  if (dist <= 1) {
-    if (entity.carryingResourceType) {
-      settlements.depositResource(s.id, entity.carryingResourceType, entity.carryingResource);
-    }
+  const d = taxiDist(entity.x, entity.y, s.x, s.y);
+  if (d <= 1) {
+    if (entity.carryingResourceType) settlements.depositResource(s.id, entity.carryingResourceType, entity.carryingResource);
     entity.carryingResource = 0;
     entity.carryingResourceType = null;
     entity.memory.returning = false;
@@ -342,37 +577,23 @@ export function behaviourReturnResources(ctx: BehaviourContext): BehaviourResult
   return moveToward(entity.x, entity.y, s.x, s.y);
 }
 
-// ── Merchant behaviours ──────────────────────────────────────
-
 export function behaviourTrade(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('trade')) return {};
   const { entity, settlements } = ctx;
-  if (entity.type !== 'merchant') return {};
-
-  // Merchants ferry food from surplus settlements to deficit ones
+  if (entity.isChild || entity.type !== 'merchant') return {};
   const home = settlements.getById(entity.settlementId);
   if (!home) return {};
-
   if (!entity.memory.returning) {
-    // Pick up surplus food from home
     if (home.foodStorage > home.maxFoodStorage * 0.6 && entity.carryingFood < ENTITY.CARRY_CAPACITY) {
       const taken = settlements.withdrawFood(home.id, ENTITY.CARRY_CAPACITY);
       entity.carryingFood += taken;
-      if (entity.carryingFood > 0) entity.memory.returning = true; // "returning" repurposed as "heading to trade dest"
+      if (entity.carryingFood > 0) entity.memory.returning = true;
     }
     return {};
   }
-
-  // Find a settlement in need
-  const all = settlements.getAll();
-  const deficit = all.find(s =>
-    s.id !== home.id &&
-    s.foodStorage < s.maxFoodStorage * 0.3
-  );
+  const deficit = settlements.getAll().find(s => s.id !== home.id && s.foodStorage < s.maxFoodStorage * 0.3);
   if (!deficit) { entity.memory.returning = false; return {}; }
-
-  const dist = Math.abs(deficit.x - entity.x) + Math.abs(deficit.y - entity.y);
-  if (dist <= 1) {
+  const d = taxiDist(entity.x, entity.y, deficit.x, deficit.y);
+  if (d <= 1) {
     settlements.depositFood(deficit.id, entity.carryingFood);
     entity.carryingFood = 0;
     entity.memory.returning = false;
@@ -381,47 +602,32 @@ export function behaviourTrade(ctx: BehaviourContext): BehaviourResult {
   return moveToward(entity.x, entity.y, deficit.x, deficit.y);
 }
 
-// ── Scholar behaviour ────────────────────────────────────────
-
 export function behaviourResearch(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('writing')) return {};
   const { entity } = ctx;
-  if (entity.type !== 'scholar') return {};
-  // Stay near settlement; emit research ticks passively
+  if (entity.isChild || entity.type !== 'scholar') return {};
   return { researchTick: 0.02 + entity.genes.creativity * 0.05 };
 }
 
-// ── Warrior behaviour ────────────────────────────────────────
-
 export function behaviourPatrol(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('warfare')) return {};
   const { entity } = ctx;
-  if (entity.type !== 'warrior') return {};
-
+  if (entity.isChild || entity.type !== 'warrior') return {};
+  if (entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') return {};
   if (entity.memory.homeSettlement && Math.random() < 0.05) {
     const [hx, hy] = entity.memory.homeSettlement;
-    const dist = Math.abs(hx - entity.x) + Math.abs(hy - entity.y);
-    if (dist > 12) return moveToward(entity.x, entity.y, hx, hy);
+    if (taxiDist(entity.x, entity.y, hx, hy) > 12) return moveToward(entity.x, entity.y, hx, hy);
   }
   if (Math.random() < 0.3) return randomMove();
   return {};
 }
 
-// ── Noble behaviour ──────────────────────────────────────────
-
 export function behaviourAdminister(ctx: BehaviourContext): BehaviourResult {
-  if (!ctx.hasMechanic('settlements')) return {};
   const { entity, settlements } = ctx;
-  if (entity.type !== 'noble') return {};
-
-  // Nobles stay at their settlement and passively boost it
+  if (entity.isChild || entity.type !== 'noble') return {};
   if (entity.settlementId !== -1) {
     const s = settlements.getById(entity.settlementId);
-    if (s) {
-      s.techPoints += 0.001; // administrative knowledge
-    }
+    if (s) s.techPoints += 0.001;
   }
-  if (Math.random() < 0.1) return randomMove(); // small wander
+  if (Math.random() < 0.1) return randomMove();
   return {};
 }
 
@@ -431,35 +637,38 @@ export type BehaviourFn = (ctx: BehaviourContext) => BehaviourResult;
 
 export const BEHAVIOUR_PIPELINES: Record<EntityType, BehaviourFn[]> = {
   hunter_gatherer: [
-    behaviourAge, behaviourHunger, behaviourHunt,
-    behaviourGather, behaviourReproduce, behaviourTerritorialWander,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourFoundCamp,
+    behaviourHunt, behaviourGather, behaviourTerritorialWander,
   ],
   villager: [
-    behaviourAge, behaviourHunger, behaviourFarm,
-    behaviourGather, behaviourReproduce, behaviourTerritorialWander,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourFoundCamp,
+    behaviourFarm, behaviourGather, behaviourTerritorialWander,
   ],
   farmer: [
-    behaviourAge, behaviourHunger, behaviourFarm,
-    behaviourReproduce, behaviourTerritorialWander,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourFarm, behaviourTerritorialWander,
   ],
   craftsman: [
-    behaviourAge, behaviourHunger, behaviourMine,
-    behaviourReturnResources, behaviourReproduce, behaviourTerritorialWander,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourMine,
+    behaviourReturnResources, behaviourTerritorialWander,
   ],
   warrior: [
-    behaviourAge, behaviourHunger,
-    behaviourPatrol, behaviourReproduce,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourPatrol,
   ],
   merchant: [
-    behaviourAge, behaviourHunger,
-    behaviourTrade, behaviourReproduce, behaviourTerritorialWander,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourTrade, behaviourTerritorialWander,
   ],
   scholar: [
-    behaviourAge, behaviourHunger,
-    behaviourResearch, behaviourReproduce, behaviourTerritorialWander,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourResearch, behaviourTerritorialWander,
   ],
   noble: [
-    behaviourAge, behaviourHunger,
-    behaviourAdminister, behaviourReproduce,
+    behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
+    behaviourSocialize, behaviourAdminister,
   ],
 };

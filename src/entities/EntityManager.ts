@@ -13,8 +13,8 @@ import { BEHAVIOUR_PIPELINES, BehaviourContext, BehaviourFn } from './Behaviours
 import { World } from '../world/World';
 import { TILE_PASSABLE } from '../world/Tile';
 import { SpatialGrid } from './SpatialGrid';
+import { ENTITY, WORLD } from '../config/constants';
 import { SettlementManager } from './SettlementManager';
-import { WORLD } from '../config/constants';
 
 export class EntityManager {
   private entities: Map<number, EntityState> = new Map();
@@ -28,7 +28,6 @@ export class EntityManager {
 
   constructor(
     private readonly world: World,
-    private readonly hasMechanic: (name: string) => boolean,
     private readonly settlements: SettlementManager,
   ) {
     this.grid = new SpatialGrid(WORLD.COLS, WORLD.ROWS, 8);
@@ -66,7 +65,7 @@ export class EntityManager {
 
   tick(tickNum: number): void {
     const toRemove: number[] = [];
-    const toSpawn: Array<{ type: EntityType; x: number; y: number; genes: any; tribeId: number }> = [];
+    const toSpawn: Array<{ type: EntityType; x: number; y: number; genes: any; tribeId: number; parentId: number }> = [];
 
     for (const id of this.aliveIds) {
       const entity = this.entities.get(id);
@@ -75,7 +74,7 @@ export class EntityManager {
       const pipeline: BehaviourFn[] = BEHAVIOUR_PIPELINES[entity.type] ?? [];
 
       // ── Cheap spatial neighbour lookup ────────────────────
-      const nearIds = this.grid.query(entity.x, entity.y, 8);
+      const nearIds = this.grid.query(entity.x, entity.y, ENTITY.VISION_RANGE);
       const neighbours: EntityState[] = [];
       for (const nid of nearIds) {
         if (nid === id) continue;
@@ -85,8 +84,8 @@ export class EntityManager {
 
       const ctx: BehaviourContext = {
         entity, world: this.world, neighbours,
+        allEntities: this.entities,
         tick: tickNum,
-        hasMechanic: this.hasMechanic,
         settlements: this.settlements,
       };
 
@@ -108,12 +107,32 @@ export class EntityManager {
           const near = this.world.findPassableTileNear(entity.x, entity.y, 3);
           if (near) {
             const childType = this.specializeChild(entity.type, entity);
+            const otherParent = result.reproduceWith ? this.entities.get(result.reproduceWith) : undefined;
             toSpawn.push({
               type: childType,
               x: near.x, y: near.y,
-              genes: createGenes(entity.genes),
+              genes: createGenes(entity.genes, otherParent?.genes),
               tribeId: entity.tribeId,
+              parentId: entity.id,
             });
+          }
+        }
+
+        if (result.foundCamp) {
+          const near = this.world.findPassableTileNear(entity.x, entity.y, ENTITY.SETTLEMENT_FOUND_RADIUS);
+          if (near) {
+            const settlement = this.settlements.found(near.x, near.y, entity.tribeId);
+            if (settlement) {
+              // Assign the founder and nearby tribe members
+              this.assignToSettlement(entity, settlement.id);
+              const nearbyTribe = [...this.entities.values()].filter(e =>
+                e.alive && !e.isChild && e.tribeId === entity.tribeId && e.settlementId === -1 &&
+                Math.abs(e.x - entity.x) + Math.abs(e.y - entity.y) <= 14
+              );
+              for (const member of nearbyTribe.slice(0, 8)) {
+                this.assignToSettlement(member, settlement.id);
+              }
+            }
           }
         }
 
@@ -157,15 +176,14 @@ export class EntityManager {
     for (const s of toSpawn) {
       const born = this.spawn(s.type, s.x, s.y, s.genes, s.tribeId);
       if (born) {
-        // Inherit settlement
-        const parent = [...this.entities.values()].find(e =>
-          Math.abs(e.x - s.x) <= 4 && Math.abs(e.y - s.y) <= 4 && e.tribeId === s.tribeId
-        );
+        born.isChild  = true;
+        born.parentId = s.parentId;
+        // Inherit settlement from parent
+        const parent = this.entities.get(s.parentId);
         if (parent) {
-          born.settlementId = parent.settlementId;
-          born.memory.homeSettlement = parent.memory.homeSettlement;
+          born.settlementId            = parent.settlementId;
+          born.memory.homeSettlement   = parent.memory.homeSettlement;
         }
-        // Update settlement population count
         if (born.settlementId !== -1) {
           const settlement = this.settlements.getById(born.settlementId);
           if (settlement) settlement.population++;
@@ -198,26 +216,18 @@ export class EntityManager {
    * Specialization only unlocks when the appropriate mechanic is active.
    */
   private specializeChild(parentType: EntityType, parent: EntityState): EntityType {
-    // Hunter-gatherers can settle once 'settlements' mechanic is unlocked
-    if (parentType === 'hunter_gatherer' && this.hasMechanic('settlements')) {
-      if (parent.tribeId !== -1 && Math.random() < 0.3) return 'villager';
+    if (parentType === 'hunter_gatherer') {
+      if (parent.tribeId !== -1 && parent.settlementId !== -1 && Math.random() < 0.3) return 'villager';
     }
-
-    // Villagers specialize based on dominant gene and available mechanics
     if (parentType === 'villager') {
       const g = parent.genes;
-      if (this.hasMechanic('farming') && g.creativity > 0.55 && Math.random() < 0.15) return 'farmer';
-      if (this.hasMechanic('basic_tools') && g.strength > 0.55 && Math.random() < 0.15) return 'craftsman';
-      if (this.hasMechanic('warfare') && g.strength > 0.65 && Math.random() < 0.1) return 'warrior';
-      if (this.hasMechanic('trade') && g.sociability > 0.65 && Math.random() < 0.08) return 'merchant';
-      if (this.hasMechanic('writing') && g.intelligence > 0.65 && Math.random() < 0.05) return 'scholar';
+      if (g.creativity > 0.55 && Math.random() < 0.12) return 'farmer';
+      if (g.strength > 0.55 && Math.random() < 0.12)   return 'craftsman';
+      if (g.strength > 0.65 && Math.random() < 0.08)   return 'warrior';
+      if (g.sociability > 0.65 && Math.random() < 0.06) return 'merchant';
+      if (g.intelligence > 0.65 && Math.random() < 0.05) return 'scholar';
     }
-
-    // Scholars occasionally produce nobles
-    if (parentType === 'scholar' && this.hasMechanic('governance') && parent.genes.ambition > 0.7 && Math.random() < 0.04) {
-      return 'noble';
-    }
-
+    if (parentType === 'scholar' && parent.genes.ambition > 0.7 && Math.random() < 0.04) return 'noble';
     return parentType;
   }
 

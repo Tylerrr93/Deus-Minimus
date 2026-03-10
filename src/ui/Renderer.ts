@@ -18,7 +18,7 @@ import { World } from '../world/World';
 import { EntityManager } from '../entities/EntityManager';
 import { EntityState, EntityType } from '../entities/Entity';
 import { TILE_COLORS } from '../world/Tile';
-import { CANVAS, WORLD } from '../config/constants';
+import { CANVAS, WORLD, ENTITY } from '../config/constants';
 import { StageManager } from '../stages/StageManager';
 import { SettlementManager } from '../entities/SettlementManager';
 
@@ -81,7 +81,14 @@ export class Renderer {
 
   markTilesDirty(): void { this.tilesDirty = true; }
 
-  render(camera: Camera, highlightTile: { x: number; y: number } | null, selectedTile: { x: number; y: number } | null, selectedEntity: EntityState | null): void {
+  render(
+    camera: Camera,
+    highlightTile: { x: number; y: number } | null,
+    selectedTile: { x: number; y: number } | null,
+    selectedEntity: EntityState | null,
+    showPartnerLines = false,
+    showFriendLines  = false,
+  ): void {
     const ctx = this.ctx;
     this.frameCount++;
     this.animOffset = (this.frameCount * 0.04) % (Math.PI * 2);
@@ -95,6 +102,7 @@ export class Renderer {
 
     this.renderTileLayer(ctx, camera);
     this.renderGrid(ctx, camera);
+    this.renderSocialLines(ctx, selectedEntity, showPartnerLines, showFriendLines);
     this.renderEntities(ctx, camera, selectedEntity);
     this.renderSettlementLabels(ctx, camera);
     this.renderHighlight(ctx, highlightTile);
@@ -259,21 +267,19 @@ export class Renderer {
     const ts = WORLD.TILE_SIZE;
     const invZoom = 1 / camera.zoom;
 
-    // Viewport bounds in world-pixels (for culling)
     const vLeft   = -camera.x * invZoom;
     const vTop    = -camera.y * invZoom;
     const vRight  = vLeft + CANVAS.WIDTH  * invZoom;
     const vBottom = vTop  + CANVAS.HEIGHT * invZoom;
 
-    // Bucket entities by type for batched rendering
     const buckets = new Map<EntityType, EntityState[]>();
+    const allVisible: EntityState[] = [];
 
     this.em.forEachAlive(e => {
       const px = e.x * ts + ts * 0.5;
       const py = e.y * ts + ts * 0.5;
-      // Viewport cull
       if (px < vLeft - 16 || px > vRight + 16 || py < vTop - 16 || py > vBottom + 16) return;
-
+      allVisible.push(e);
       let bucket = buckets.get(e.type);
       if (!bucket) { bucket = []; buckets.set(e.type, bucket); }
       bucket.push(e);
@@ -288,11 +294,16 @@ export class Renderer {
         const px = e.x * ts + ts * 0.5;
         const py = e.y * ts + ts * 0.5;
         const pulse = 1 + Math.sin(this.animOffset + e.id * 0.53) * 0.08;
-        const size = baseSize * (0.75 + e.genes.resilience * 0.5) * pulse;
+
+        // Babies: 35% size, soft white circle
+        const ageFactor = e.isChild
+          ? 0.25 + (e.age / ENTITY.SPECIALIZE_AGE) * 0.15
+          : 1.0;
+        const size = baseSize * (0.75 + e.genes.resilience * 0.5) * pulse * ageFactor;
 
         ctx.globalAlpha = 0.45 + e.energy * 0.55;
 
-        // Glow ring for selected entity
+        // Selection ring
         if (selectedEntity && e.id === selectedEntity.id) {
           const ringPulse = 1 + Math.sin(this.animOffset * 4) * 0.3;
           ctx.globalAlpha = 0.85;
@@ -308,9 +319,24 @@ export class Renderer {
           ctx.stroke();
         }
 
-        this.drawEntityShape(ctx, type, e, px, py, size, color);
+        if (e.isChild) {
+          // Baby: soft cream-coloured circle
+          ctx.globalAlpha = 0.55 + e.energy * 0.4;
+          ctx.fillStyle = '#ffeecc';
+          ctx.beginPath();
+          ctx.arc(px, py, size, 0, Math.PI * 2);
+          ctx.fill();
+          // Tiny highlight dot
+          ctx.globalAlpha = 0.5;
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(px - size * 0.3, py - size * 0.3, size * 0.28, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          this.drawEntityShape(ctx, type, e, px, py, size, color);
+        }
 
-        // Energy bar: only shown when low
+        // Energy bar when low
         if (e.energy < 0.45) {
           ctx.globalAlpha = 0.8;
           ctx.fillStyle = '#ff3333';
@@ -318,12 +344,44 @@ export class Renderer {
         }
 
         // Carry indicator dot
-        if (e.carryingFood > 0) {
+        if (e.carryingFood > 0 && !e.isChild) {
           ctx.globalAlpha = 0.9;
           ctx.fillStyle = '#ffff44';
           ctx.beginPath();
           ctx.arc(px + size * 0.6, py - size * 0.6, 0.7, 0, Math.PI * 2);
           ctx.fill();
+        }
+
+        // Action animation: gathering/mining sparks
+        if (e.actionAnim.type !== null && camera.zoom >= 1.2) {
+          const prog = e.actionAnim.progress;
+          const angle = (prog / 8) * Math.PI * 2;
+          const dist  = size * 1.6;
+          const ax    = px + Math.cos(angle) * dist;
+          const ay    = py + Math.sin(angle) * dist;
+          const aColors: Record<string, string> = { gather: '#aaff66', mine: '#ffcc44', farm: '#44ffaa' };
+          ctx.globalAlpha = 0.85 - prog * 0.1;
+          ctx.fillStyle = aColors[e.actionAnim.type] ?? '#ffffff';
+          ctx.beginPath();
+          ctx.arc(ax, ay, 0.8, 0, Math.PI * 2);
+          ctx.fill();
+          // Tiny trail
+          ctx.globalAlpha = 0.35;
+          ctx.beginPath();
+          ctx.arc(ax - Math.cos(angle) * 1.2, ay - Math.sin(angle) * 1.2, 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Social state icon (zoomed in)
+        if (camera.zoom >= 1.5 && !e.isChild) {
+          const state = e.social.socialState;
+          if (state === 'chatting' || state === 'relaxing') {
+            const icon = state === 'chatting' ? '💬' : '💤';
+            ctx.globalAlpha = 0.85 + Math.sin(this.animOffset * 2 + e.id) * 0.15;
+            ctx.font = `${Math.max(4, ts * 0.55)}px serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(icon, px, py - size - 2);
+          }
         }
       }
     }
@@ -435,38 +493,115 @@ export class Renderer {
   // ── Settlement name labels ────────────────────────────────
 
   private renderSettlementLabels(ctx: CanvasRenderingContext2D, camera: Camera): void {
-    // Only show labels at zoom > 1.2 to avoid clutter
-    if (camera.zoom < 1.0) return;
 
-    const ts = WORLD.TILE_SIZE;
-    ctx.font = `${Math.floor(4 / camera.zoom + 6)}px 'Share Tech Mono', monospace`;
-    ctx.textAlign = 'center';
+  const settlements = this.settlements.getAll();
+  const ts = WORLD.TILE_SIZE;
 
-    for (const s of this.settlements.getAll()) {
-      const px = s.x * ts + ts / 2;
-      const py = s.y * ts - 4;
+  for (const s of settlements) {
 
-      // Cull off-screen labels
-      const sx = px * camera.zoom + camera.x;
-      const sy = py * camera.zoom + camera.y;
-      if (sx < -80 || sx > CANVAS.WIDTH + 80 || sy < -20 || sy > CANVAS.HEIGHT + 20) continue;
+    const x = s.x * ts + ts * 0.5;
+    const y = s.y * ts + ts * 0.5;
 
-      const levelColors = ['', '#aa8844', '#88aa44', '#44aa88', '#aa88ff'];
-      ctx.fillStyle = levelColors[s.level] ?? '#ffffff';
-      ctx.globalAlpha = 0.85;
-      ctx.fillText(s.name, px, py);
+    ctx.fillStyle = "#c89b3c";
 
-      // Food indicator
-      const foodPct = s.foodStorage / s.maxFoodStorage;
-      ctx.globalAlpha = 0.6;
-      ctx.fillStyle = foodPct > 0.5 ? '#44cc44' : foodPct > 0.2 ? '#ccaa22' : '#cc2222';
-      ctx.fillRect(px - 6, py + 1, 12 * foodPct, 1.2);
-    }
+    ctx.beginPath();
+    ctx.arc(x, y, ts * 0.6, 0, Math.PI * 2);
+    ctx.fill();
 
-    ctx.globalAlpha = 1;
+    ctx.fillStyle = "white";
+    ctx.font = `${ts * 0.8}px sans-serif`;
+    ctx.textAlign = "center";
+
+    ctx.fillText(`T${s.id}`, x, y - ts);
   }
 
+}
+
   // ── Highlight ─────────────────────────────────────────────
+
+  // ── Social relationship / friend lines ───────────────────
+
+  private renderSocialLines(
+    ctx: CanvasRenderingContext2D,
+    selectedEntity: EntityState | null,
+    showPartnerLines: boolean,
+    showFriendLines: boolean,
+  ): void {
+    if (!selectedEntity) return;
+    if (!showPartnerLines && !showFriendLines) return;
+
+    const ts = WORLD.TILE_SIZE;
+    const sx = selectedEntity.x * ts + ts * 0.5;
+    const sy = selectedEntity.y * ts + ts * 0.5;
+    const s  = selectedEntity.social;
+
+    const byId = new Map<number, EntityState>();
+    this.em.forEachAlive(e => byId.set(e.id, e));
+
+    ctx.save();
+    ctx.lineWidth = 0.8;
+
+    // ── Partner lines ──────────────────────────────────────
+    if (showPartnerLines) {
+      const pulse = 0.55 + Math.sin(this.animOffset * 3 + selectedEntity.id * 0.4) * 0.2;
+
+      for (const pid of s.partnerIds) {
+        const partner = byId.get(pid);
+        if (!partner) continue;
+        const px = partner.x * ts + ts * 0.5;
+        const py = partner.y * ts + ts * 0.5;
+        const isNearby = Math.abs(partner.x - selectedEntity.x) + Math.abs(partner.y - selectedEntity.y) <= 6;
+        ctx.globalAlpha = pulse * (isNearby ? 1 : 0.45);
+        ctx.strokeStyle = '#ff88aa';
+        ctx.setLineDash(isNearby ? [] : [2, 3]);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(px, py); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = pulse * 0.9;
+        ctx.font = '5px serif'; ctx.textAlign = 'center';
+        ctx.fillText('❤', (sx + px) / 2, (sy + py) / 2);
+      }
+
+      for (const pid of s.affairPartnerIds) {
+        const partner = byId.get(pid);
+        if (!partner) continue;
+        const px = partner.x * ts + ts * 0.5;
+        const py = partner.y * ts + ts * 0.5;
+        ctx.globalAlpha = pulse * 0.4;
+        ctx.strokeStyle = '#ffaa44';
+        ctx.setLineDash([1.5, 3]);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(px, py); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = '5px serif'; ctx.textAlign = 'center';
+        ctx.fillText('🔥', (sx + px) / 2, (sy + py) / 2);
+      }
+    }
+
+    // ── Friend lines ──────────────────────────────────────
+    if (showFriendLines) {
+      const pulse = 0.32 + Math.sin(this.animOffset * 2 + selectedEntity.id * 0.7) * 0.1;
+      for (const fid of s.friendIds) {
+        const friend = byId.get(fid);
+        if (!friend) continue;
+        const fx = friend.x * ts + ts * 0.5;
+        const fy = friend.y * ts + ts * 0.5;
+        const isChatting = friend.social.socialState === 'chatting' &&
+          selectedEntity.social.socialState === 'chatting';
+        ctx.globalAlpha = pulse + (isChatting ? 0.3 : 0);
+        ctx.strokeStyle = isChatting ? '#88ffee' : '#4488cc';
+        ctx.setLineDash([1, 2.5]);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(fx, fy); ctx.stroke();
+        ctx.setLineDash([]);
+        if (isChatting) {
+          ctx.font = '5px serif'; ctx.textAlign = 'center';
+          ctx.fillText('💬', (sx + fx) / 2, (sy + fy) / 2);
+        }
+      }
+    }
+
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
 
   private renderHighlight(
     ctx: CanvasRenderingContext2D,
@@ -538,6 +673,8 @@ export class Renderer {
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }
+
+  
 
   // ── Helpers ───────────────────────────────────────────────
 

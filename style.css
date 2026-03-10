@@ -471,3 +471,31 @@ body {
 .gene-bar-wrap { flex:1; height:4px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
 .gene-bar { height:100%; border-radius:2px; }
 .gene-val { width:24px; text-align:right; color:var(--text-dim); font-size:9px; }
+
+/* ── Social section toggle row ───────────────────────── */
+.info-social-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.info-social-toggles {
+  display: flex;
+  gap: 4px;
+}
+
+.info-social-toggles button {
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid #443344;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: inherit;
+  letter-spacing: 0.03em;
+}
+
+.info-social-toggles button:hover {
+  filter: brightness(1.3);
+}

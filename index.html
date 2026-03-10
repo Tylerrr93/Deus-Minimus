@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Deus Minimus — A God Game</title>
+  <title>Deus Minimus</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Share+Tech+Mono&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./style.css" />
@@ -35,22 +35,23 @@
           <button id="btn-new-world" class="ctrl-btn danger">&#x21BA; New World</button>
         </div>
       </div>
-      <div id="power-panel"></div>
     </div>
     <div id="event-log" class="panel right-panel"></div>
     <div id="help-overlay">
       <div class="help-box">
         <h2>Deus Minimus</h2>
-        <p>You are a <em>god of little consequence.</em> Your people don't know you exist.</p>
+        <p>You watch. They live. You cannot intervene.</p>
         <p><b>Right-click drag</b> or <b>WASD</b> to pan the world.</p>
         <p><b>Scroll wheel</b> to zoom in and out.</p>
-        <p><b>Select a Divine Power</b> then <b>left-click the map</b> to use it.</p>
-        <p>Hunter-gatherers begin scattered across the land. They will form tribes, found settlements, and develop civilizations — or collapse trying.</p>
-        <p>Your influence is limited. Favor regenerates slowly. Spend it wisely.</p>
+        <p><b>Click an entity</b> to inspect them. Click again to deselect.</p>
+        <p>Hunter-gatherers begin scattered. They will find mates, raise children, form tribes, and build camps — entirely on their own.</p>
         <hr/>
-        <p class="help-tip">⬡ Settlements are founded automatically when tribes grow large enough.<br>
-           ⬡ God powers focused on <em>inspiration</em> and <em>discovery</em> scale better than pure destruction.<br>
-           ⬡ Every run generates a unique world and unique civilization path.</p>
+        <p class="help-tip">
+          ⬡ Babies follow their parent and appear smaller until they grow up.<br>
+          ⬡ Animated sparks show gathering and mining actions.<br>
+          ⬡ Entities carry food and resources back to their camp's shared stockpile.<br>
+          ⬡ Well-fed, ambitious tribe members will naturally found new camps.
+        </p>
         <button onclick="document.getElementById('help-overlay').classList.add('hidden')">Begin</button>
       </div>
     </div>

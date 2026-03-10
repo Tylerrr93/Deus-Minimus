@@ -20,10 +20,11 @@ class Game {
   private speed = 1;
   private lastTickTime = 0;
   private accumulator = 0;
-  private selectedPowerId: string | null = null;
 
   private selectedTile: { x: number; y: number } | null = null;
   private selectedEntity: EntityState | null = null;
+  private showPartnerLines = false;
+  private showFriendLines  = false;
 
   constructor() {
     const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -66,52 +67,30 @@ class Game {
       this.renderer.markTilesDirty();
     };
 
-    this.ui.onPowerSelected = (id) => {
-      this.selectedPowerId = id;
-      (document.getElementById('game-canvas') as HTMLCanvasElement).style.cursor =
-        id ? 'crosshair' : 'default';
-    };
+    this.ui.onTogglePartnerLines = (v) => { this.showPartnerLines = v; };
+    this.ui.onToggleFriendLines  = (v) => { this.showFriendLines  = v; };
 
     this.input.onEntityClick = (entity) => {
-      if (this.selectedPowerId) return;
       if (this.selectedEntity?.id === entity.id) {
         this.selectedEntity = null;
-        this.selectedTile = null;
+        this.selectedTile   = null;
+        this.showPartnerLines = false;
+        this.showFriendLines  = false;
         this.ui.clearInfoPanel();
       } else {
         this.selectedEntity = entity;
-        this.selectedTile = null;
+        this.selectedTile   = null;
         this.ui.updateInfoPanelEntity(entity, this.sim.settlements);
       }
     };
 
     this.input.onTileClick = (tile) => {
-      if (this.selectedPowerId) {
-        const result = this.sim.godPowers.execute(
-          this.selectedPowerId,
-          this.sim.year,
-          this.sim.world,
-          this.sim.entities,
-          this.sim.settlements,
-          this.sim.getState() as any,
-          tile,
-        );
-        if (result) {
-          this.ui.pushNotification(result, 'minor');
-          this.renderer.markTilesDirty();
-        }
-        this.ui.clearSelectedPower();
-        this.selectedPowerId = null;
-        (document.getElementById('game-canvas') as HTMLCanvasElement).style.cursor = 'default';
-        return;
-      }
-
       if (this.selectedTile?.x === tile.x && this.selectedTile?.y === tile.y) {
         this.selectedTile = null;
         this.ui.clearInfoPanel();
       } else {
-        this.selectedTile = tile;
-        this.selectedEntity = null;
+        this.selectedTile    = tile;
+        this.selectedEntity  = null;
         const tileData = this.sim.world.getTile(tile.x, tile.y);
         if (tileData) this.ui.updateInfoPanelTile(tileData);
         else this.ui.clearInfoPanel();
@@ -142,8 +121,10 @@ class Game {
           this.sim.settlements,
         );
         this.input.setEntityManager(this.sim.entities);
-        this.selectedEntity = null;
-        this.selectedTile = null;
+        this.selectedEntity   = null;
+        this.selectedTile     = null;
+        this.showPartnerLines = false;
+        this.showFriendLines  = false;
         this.ui.clearInfoPanel();
         this.bindEvents();
       }
@@ -151,7 +132,7 @@ class Game {
   }
 
   private loop(timestamp: number): void {
-    const dt = Math.min(timestamp - this.lastTickTime, 100);
+    const dt = Math.min(timestamp - this.lastTickTime, 200);
     this.lastTickTime = timestamp;
 
     this.input.processKeys(dt);
@@ -182,11 +163,16 @@ class Game {
       }
     }
 
-    this.renderer.render(this.camera, this.input.hoveredTile, this.selectedTile, this.selectedEntity);
+    this.renderer.render(
+      this.camera,
+      this.input.hoveredTile,
+      this.selectedTile,
+      this.selectedEntity,
+      this.showPartnerLines,
+      this.showFriendLines,
+    );
 
-    const state = this.sim.getState();
-    const powers = this.sim.godPowers.getAvailablePowers(this.sim.year);
-    this.ui.update(state, powers);
+    this.ui.update(this.sim.getState());
 
     requestAnimationFrame(this.loop.bind(this));
   }

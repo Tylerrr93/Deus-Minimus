@@ -3,18 +3,11 @@
 // ============================================================
 
 import { SimulationState } from '../simulation/Simulation';
-import { GodPower } from '../godpowers/godPowerDefinitions';
 import { FiredEvent } from '../events/EventManager';
 import { STAGE_DEFINITIONS } from '../stages/stageDefinitions';
 import { EntityState } from '../entities/Entity';
 import { Tile } from '../world/Tile';
 import { SettlementManager } from '../entities/SettlementManager';
-
-export interface UIState {
-  selectedPowerId: string | null;
-  isPaused: boolean;
-  speed: number;
-}
 
 let _notifId = 0;
 interface Notification {
@@ -29,40 +22,37 @@ export class UIManager {
   private hud:             HTMLElement;
   private sidebar:         HTMLElement;
   private eventLog:        HTMLElement;
-  private powerPanel:      HTMLElement;
   private notifContainer:  HTMLElement;
   private stageBar:        HTMLElement;
   private popChart:        HTMLElement;
   private infoPanel:       HTMLElement;
   private notifications:   Notification[] = [];
-  private _selectedPowerId: string | null = null;
 
-  onPowerSelected?: (id: string | null) => void;
+  onTogglePartnerLines?: (v: boolean) => void;
+  onToggleFriendLines?:  (v: boolean) => void;
+
+  private _showPartnerLines = false;
+  private _showFriendLines  = false;
 
   constructor() {
     this.hud            = document.getElementById('hud')!;
     this.sidebar        = document.getElementById('sidebar')!;
     this.eventLog       = document.getElementById('event-log')!;
-    this.powerPanel     = document.getElementById('power-panel')!;
     this.notifContainer = document.getElementById('notifications')!;
     this.stageBar       = document.getElementById('stage-bar')!;
     this.popChart       = document.getElementById('pop-chart')!;
     this.infoPanel      = document.getElementById('info-panel')!;
   }
 
-  update(state: SimulationState, availablePowers: GodPower[]): void {
+  update(state: SimulationState): void {
     this.updateHUD(state);
     this.updateStageBar(state);
-    this.updatePowers(availablePowers, state.favor, state.year ?? 0);
     this.updateEventLog(state.recentEvents);
     this.updatePopChart(state);
     this.updateNotifications();
   }
 
   private updateHUD(state: SimulationState): void {
-    const favPercent = Math.round((state.favor / 300) * 100);
-
-    // Build type distribution bar
     const dist = state.typeDistribution;
     const total = Math.max(1, Object.values(dist).reduce((a, b) => a + b, 0));
     const typeColors: Record<string, string> = {
@@ -77,7 +67,6 @@ export class UIManager {
       return `<div class="type-seg" style="width:${pct}%;background:${color}" title="${type}: ${count}"></div>`;
     }).join('');
 
-    // Settlement summary
     const sl = state.settlementLevels;
     const settlSummary = [
       sl.camp    ? `<span class="hud-stype camp">${sl.camp} Camps</span>` : '',
@@ -98,15 +87,11 @@ export class UIManager {
       </div>
       <div class="hud-row">
         <span class="hud-stat">⛏ Res: <b>${state.resourcesExtracted}</b></span>
-        <span class="hud-stat">⚙ Tech: <b>${state.techDiscovered}</b></span>
         <span class="hud-stat">★ Tribes: <b>${state.tribesFormed}</b></span>
+        <span class="hud-stat">🏕 Camps: <b>${state.settlementsBuilt}</b></span>
       </div>
       <div class="type-bar-container" title="Population composition">${typeBar}</div>
       <div class="hud-row settle-row">${settlSummary || '<span class="hud-stype">No settlements yet</span>'}</div>
-      <div class="favor-bar-container">
-        <div class="favor-bar" style="width:${favPercent}%"></div>
-        <span class="favor-label">⚡ Favor: ${state.favor} / 300</span>
-      </div>
     `;
   }
 
@@ -124,39 +109,6 @@ export class UIManager {
     this.stageBar.innerHTML = html;
   }
 
-  private updatePowers(powers: GodPower[], favor: number, year: number): void {
-    const html = powers.map(p => {
-      const canAfford = favor >= p.favorCost;
-      const isSelected = p.id === this._selectedPowerId;
-      const cls = `power-btn ${canAfford ? '' : 'unaffordable'} ${isSelected ? 'selected' : ''}`;
-      return `
-        <button class="${cls}" data-power="${p.id}" title="${p.description}">
-          <span class="power-icon">${p.icon}</span>
-          <span class="power-name">${p.name}</span>
-          <span class="power-cost">${p.favorCost}⚡</span>
-        </button>
-      `;
-    }).join('');
-    this.powerPanel.innerHTML = `<div class="panel-title">Divine Powers</div>${html}`;
-
-    this.powerPanel.querySelectorAll('.power-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = (btn as HTMLElement).dataset.power!;
-        this._selectedPowerId = this._selectedPowerId === id ? null : id;
-        this.onPowerSelected?.(this._selectedPowerId);
-        this.update(
-          {
-            recentEvents: [], favor, year, stageName: '', stageProgress: 0,
-            population: 0, totalBirths: 0, totalDeaths: 0, resourcesExtracted: 0,
-            tribesFormed: 0, settlementsBuilt: 0, techDiscovered: 0,
-            highestPopulation: 0, tick: 0, typeDistribution: {}, settlementLevels: {},
-          },
-          powers
-        );
-      });
-    });
-  }
-
   private updateEventLog(events: FiredEvent[]): void {
     const html = events.map(e => {
       const sevClass = `event-${e.event.severity}`;
@@ -169,7 +121,6 @@ export class UIManager {
     this.eventLog.innerHTML = `<div class="panel-title">Chronicles</div>${html || '<div class="event-empty">The world awaits…</div>'}`;
   }
 
-  /** Mini text chart showing type composition over the current run. */
   private updatePopChart(state: SimulationState): void {
     const dist = state.typeDistribution;
     const typeColors: Record<string, string> = {
@@ -216,7 +167,7 @@ export class UIManager {
       scholar: '#44ddff', noble: '#ffaa22',
     };
     const color = typeColors[entity.type] ?? '#ffffff';
-    const label = entity.type.replace(/_/g, ' ');
+    const label = entity.isChild ? 'child' : entity.type.replace(/_/g, ' ');
     const energyPct = Math.round(entity.energy * 100);
     const energyColor = entity.energy > 0.6 ? '#44cc44' : entity.energy > 0.3 ? '#ccaa22' : '#cc2222';
     const settl = entity.settlementId >= 0 ? settlements.getById(entity.settlementId) : null;
@@ -231,11 +182,29 @@ export class UIManager {
       return `<div class="gene-bar-wrap"><div class="gene-bar" style="width:${pct}%;background:${col}"></div></div>`;
     };
 
+    const s = entity.social;
+    const genderIcon = s.gender === 'male' ? '♂' : '♀';
+    const orientIcons: Record<string, string> = { straight: '⇄', gay: '⇆', bi: '⇋' };
+    const orientLabel = s.orientation ?? (entity.isChild ? 'child' : '?');
+    const orientIcon = s.orientation ? orientIcons[s.orientation] : '–';
+    const styleLabel = s.relationshipStyle ?? (entity.isChild ? '–' : '?');
+    const roleLabel = s.followingId !== null ? '↩ following' : s.partnerIds.length > 0 ? '↪ leading' : '—';
+    const stateEmoji: Record<string, string> = { idle: '–', chatting: '💬', relaxing: '💤', seeking: '👀' };
+    const affairLabel = s.affairPartnerIds.length > 0 ? `#${s.affairPartnerIds.join(', #')}` : '—';
+    const stressColor = s.stressTicks > 40 ? '#cc4444' : s.stressTicks > 20 ? '#ccaa22' : '#aaaaaa';
+
+    const pBtnStyle = this._showPartnerLines
+      ? 'background:#cc4466;color:#fff;border-color:#ff88aa'
+      : 'background:#1a1a22;color:#cc88aa;border-color:#553344';
+    const fBtnStyle = this._showFriendLines
+      ? 'background:#224466;color:#fff;border-color:#4488cc'
+      : 'background:#1a1a22;color:#5588aa;border-color:#223344';
+
     this.infoPanel.innerHTML = `
       <div class="info-header">
         <span class="info-type-dot" style="background:${color}"></span>
         <span class="info-title" style="color:${color}">${label.toUpperCase()}</span>
-        <span class="info-id">#${entity.id}</span>
+        <span class="info-id">${genderIcon} #${entity.id}</span>
       </div>
       <div class="info-grid">
         <div class="info-row"><span class="info-label">Age</span><span class="info-val">${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}</span></div>
@@ -244,6 +213,27 @@ export class UIManager {
         <div class="info-row"><span class="info-label">Home</span><span class="info-val">${settlName}</span></div>
         <div class="info-row"><span class="info-label">Tribe</span><span class="info-val">${entity.tribeId >= 0 ? '#' + entity.tribeId : 'Solitary'}</span></div>
         <div class="info-row"><span class="info-label">Carrying</span><span class="info-val">${carrying}</span></div>
+        ${entity.isChild ? `<div class="info-row"><span class="info-label">Parent</span><span class="info-val">${entity.parentId >= 0 ? '#' + entity.parentId : '—'}</span></div>` : ''}
+      </div>
+      <div class="info-divider"></div>
+      <div class="info-social">
+        <div class="info-social-header">
+          <span class="info-genes-title">Social</span>
+          <div class="info-social-toggles">
+            <button id="btn-partner-lines" style="${pBtnStyle}">❤ Bonds</button>
+            <button id="btn-friend-lines"  style="${fBtnStyle}">★ Friends</button>
+          </div>
+        </div>
+        <div class="info-grid">
+          <div class="info-row"><span class="info-label">${orientIcon} Orientation</span><span class="info-val">${orientLabel}</span></div>
+          <div class="info-row"><span class="info-label">❤ Style</span><span class="info-val">${styleLabel}</span></div>
+          <div class="info-row"><span class="info-label">State</span><span class="info-val">${stateEmoji[s.socialState] ?? '–'} ${s.socialState}</span></div>
+          <div class="info-row"><span class="info-label">Partners</span><span class="info-val">${s.partnerIds.length > 0 ? '#' + s.partnerIds.join(', #') : 'none'}</span></div>
+          <div class="info-row"><span class="info-label">Affairs</span><span class="info-val">${affairLabel}</span></div>
+          <div class="info-row"><span class="info-label">Friends</span><span class="info-val">${s.friendIds.length > 0 ? s.friendIds.length + ' known' : 'none'}</span></div>
+          <div class="info-row"><span class="info-label">Role</span><span class="info-val">${roleLabel}</span></div>
+          <div class="info-row"><span class="info-label">Stress</span><span class="info-val" style="color:${stressColor}">${s.stressTicks}</span></div>
+        </div>
       </div>
       <div class="info-divider"></div>
       <div class="info-genes">
@@ -254,6 +244,17 @@ export class UIManager {
       </div>
     `;
     this.infoPanel.classList.add('active');
+
+    document.getElementById('btn-partner-lines')?.addEventListener('click', () => {
+      this._showPartnerLines = !this._showPartnerLines;
+      this.onTogglePartnerLines?.(this._showPartnerLines);
+      this.updateInfoPanelEntity(entity, settlements);
+    });
+    document.getElementById('btn-friend-lines')?.addEventListener('click', () => {
+      this._showFriendLines = !this._showFriendLines;
+      this.onToggleFriendLines?.(this._showFriendLines);
+      this.updateInfoPanelEntity(entity, settlements);
+    });
   }
 
   updateInfoPanelTile(tile: Tile): void {
@@ -290,12 +291,9 @@ export class UIManager {
   clearInfoPanel(): void {
     this.infoPanel.classList.remove('active');
     this.infoPanel.innerHTML = '';
-  }
-
-  get selectedPowerId(): string | null { return this._selectedPowerId; }
-
-  clearSelectedPower(): void {
-    this._selectedPowerId = null;
-    this.onPowerSelected?.(null);
+    this._showPartnerLines = false;
+    this._showFriendLines  = false;
+    this.onTogglePartnerLines?.(false);
+    this.onToggleFriendLines?.(false);
   }
 }
