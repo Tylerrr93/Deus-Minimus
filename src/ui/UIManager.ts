@@ -166,6 +166,24 @@ export class UIManager {
       warrior: '#ff4444', merchant: '#aa88ff',
       scholar: '#44ddff', noble: '#ffaa22',
     };
+
+    let currentTask = 'Wandering / Idle';
+    if (entity.actionAnim.type) {
+      currentTask = entity.actionAnim.type === 'gather' ? '🌾 Gathering Food' :
+                    entity.actionAnim.type === 'mine' ? '⛏ Mining Resources' :
+                    entity.actionAnim.type === 'farm' ? '🪴 Farming' : 'Working';
+    } else if (entity.memory.returning) {
+      currentTask = '⛺ Returning to Settlement';
+    } else if (entity.social.socialState === 'chatting') {
+      currentTask = '💬 Chatting with friend';
+    } else if (entity.social.socialState === 'relaxing') {
+      currentTask = '💤 Relaxing';
+    } else if (entity.social.seekCooldown > 0 && entity.social.partnerIds.length === 0) {
+      currentTask = '👀 Seeking partner';
+    } else if (entity.energy < 0.45) {
+      currentTask = '🍖 Searching for food';
+    }
+
     const color = typeColors[entity.type] ?? '#ffffff';
     const label = entity.isChild ? 'child' : entity.type.replace(/_/g, ' ');
     const energyPct = Math.round(entity.energy * 100);
@@ -207,6 +225,7 @@ export class UIManager {
         <span class="info-id">${genderIcon} #${entity.id}</span>
       </div>
       <div class="info-grid">
+        <div class="info-row"><span class="info-label">Task</span><span class="info-val" style="color:#88ddff; font-weight:bold;">${currentTask}</span></div>
         <div class="info-row"><span class="info-label">Age</span><span class="info-val">${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}</span></div>
         <div class="info-row"><span class="info-label">Energy</span><span class="info-val" style="color:${energyColor}">${energyPct}%</span></div>
         <div class="info-row"><span class="info-label">Position</span><span class="info-val">${entity.x}, ${entity.y}</span></div>

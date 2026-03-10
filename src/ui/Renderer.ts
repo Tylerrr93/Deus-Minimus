@@ -101,6 +101,7 @@ export class Renderer {
     ctx.scale(camera.zoom, camera.zoom);
 
     this.renderTileLayer(ctx, camera);
+    this.renderResources(ctx, camera);
     this.renderGrid(ctx, camera);
     this.renderSocialLines(ctx, selectedEntity, showPartnerLines, showFriendLines);
     this.renderEntities(ctx, camera, selectedEntity);
@@ -121,6 +122,49 @@ export class Renderer {
     }
     // Blit the cached tile bitmap onto the screen — one draw call
     ctx.drawImage(this.tileCanvas, 0, 0);
+  }
+
+  private renderResources(ctx: CanvasRenderingContext2D, camera: Camera): void {
+    
+    //only show resources when zoomed in enough
+    if (camera.zoom < 4.0) return;
+    
+    const ts = WORLD.TILE_SIZE;
+    const invZoom = 1 / camera.zoom;
+    const vLeft   = -camera.x * invZoom;
+    const vTop    = -camera.y * invZoom;
+    const vRight  = vLeft + CANVAS.WIDTH * invZoom;
+    const vBottom = vTop  + CANVAS.HEIGHT * invZoom;
+
+    for (let y = Math.max(0, Math.floor(vTop / ts)); y < Math.min(this.world.rows, Math.ceil(vBottom / ts)); y++) {
+      for (let x = Math.max(0, Math.floor(vLeft / ts)); x < Math.min(this.world.cols, Math.ceil(vRight / ts)); x++) {
+        const tile = this.world.getTile(x, y);
+        if (!tile || tile.improvement) continue; // Don't draw over improvements
+
+        for (const res of tile.resources) {
+          if (res.amount <= 0.5) continue; // Barely any left, don't draw
+
+          // Calculate visual size based on how much resource is left
+          const fullness = res.amount / res.max; 
+          const size = (ts * 0.4) * fullness;
+          const px = x * ts + ts / 2;
+          const py = y * ts + ts / 2;
+
+          ctx.beginPath();
+          if (res.type === 'wood') {
+             ctx.fillStyle = `rgba(30, 90, 30, ${0.4 + fullness * 0.6})`;
+             ctx.arc(px, py, size, 0, Math.PI * 2);
+          } else if (res.type === 'stone' || res.type === 'iron') {
+             ctx.fillStyle = res.type === 'stone' ? '#888888' : '#aa7755';
+             ctx.rect(px - size/2, py - size/2, size, size);
+          } else if (res.type === 'food') {
+             ctx.fillStyle = `rgba(180, 220, 100, ${0.3 + fullness * 0.7})`;
+             ctx.arc(px + 1, py - 1, size * 0.7, 0, Math.PI * 2);
+          }
+          ctx.fill();
+        }
+      }
+    }
   }
 
   // ── Grid overlay ───────────────────────────────────────────

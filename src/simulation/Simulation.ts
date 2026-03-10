@@ -114,6 +114,14 @@ export class Simulation {
         for (const member of [leader, ...nearby.slice(0, 7)]) {
           member.tribeId = newTribeId;
         }
+        
+        const settlement = this.settlements.found(leader.x, leader.y, newTribeId);
+        if (settlement) {
+            for (const member of [leader, ...nearby.slice(0, 7)]) {
+                member.settlementId = settlement.id; // Assign them to the new home
+            }
+            // Force the renderer to update the tile cache to show the new settlement
+        }
       }
     }
   }

@@ -175,8 +175,8 @@ export function createEntity(
     energy: 0.8 + Math.random() * 0.2,
     age: 0,
 
-    maxAge: (500 + Math.random() * 400) * (1 + g.resilience * 0.4),
-
+    maxAge: (800 + Math.random() * 600) * (1 + g.resilience * 0.4),
+    
     genes: g,
 
     social: {

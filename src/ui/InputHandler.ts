@@ -82,6 +82,10 @@ export class InputHandler {
   }
 
   private onMouseDown(e: MouseEvent): void {
+
+    //stop ui clicks from interacting with the map
+    if (e.target !== this.canvas) return;
+
     if (e.button === 0) {
       this.dragDistance = 0;
       this.isDragging = true;
@@ -98,6 +102,10 @@ export class InputHandler {
   }
 
   private onMouseMove(e: MouseEvent): void {
+
+    //stop ui clicks from interacting with the map
+    if (e.target !== this.canvas) return;
+
     const pos = this.getEventPos(e);
     const world = this.screenToWorld(pos.x, pos.y);
     this._hoveredTile = this.worldToTile(world.x, world.y);
@@ -113,6 +121,10 @@ export class InputHandler {
   }
 
   private onMouseUp(e: MouseEvent): void {
+
+    //stop ui clicks from interacting with the map
+    if (e.target !== this.canvas) return;
+
     if (e.button === 0) {
       this.isDragging = false;
       if (this.dragDistance < 5) {
@@ -133,6 +145,10 @@ export class InputHandler {
   }
 
   private onWheel(e: WheelEvent): void {
+
+    //stop ui clicks from interacting with the map
+    if (e.target !== this.canvas) return;
+    
     e.preventDefault();
     const pos = this.getEventPos(e);
     const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;

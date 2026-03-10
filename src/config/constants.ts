@@ -22,8 +22,8 @@ export const WORLD = {
 };
 
 export const SIM = {
-  BASE_TICK_MS:    250,  // ms per sim tick — slow enough to observe events
-  TICKS_PER_YEAR:  100,  // years advance at this cadence (100 ticks = ~25s real time)
+  BASE_TICK_MS:    500,  // ms per sim tick — slow enough to observe events
+  TICKS_PER_YEAR:  120,  // years advance at this cadence (100 ticks = ~25s real time)
 };
 
 export const GOD = {
@@ -37,7 +37,7 @@ export const ENTITY = {
   HUNGER_RATE:             0.0008,   // slow drain — entities stay fed comfortably
   MOVE_ENERGY_COST:        0.0002,   // cheap movement
   REPRO_ENERGY_THRESHOLD:  0.55,     // achievable even when not perfectly topped off
-  REPRO_COOLDOWN_TICKS:    60,       // several births possible per lifespan
+  REPRO_COOLDOWN_TICKS:    120,       // several births possible per lifespan
   VISION_RANGE:            10,       // used for neighbour query radius
   MUTATION_RATE:           0.04,
   CARRY_CAPACITY:          3.0,
