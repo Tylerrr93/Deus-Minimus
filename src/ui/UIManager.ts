@@ -264,12 +264,17 @@ export class UIManager {
     `;
     this.infoPanel.classList.add('active');
 
-    document.getElementById('btn-partner-lines')?.addEventListener('click', () => {
+    // Replaced 'click' with 'pointerdown' and strictly stopped propagation
+    document.getElementById('btn-partner-lines')?.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       this._showPartnerLines = !this._showPartnerLines;
       this.onTogglePartnerLines?.(this._showPartnerLines);
       this.updateInfoPanelEntity(entity, settlements);
     });
-    document.getElementById('btn-friend-lines')?.addEventListener('click', () => {
+    document.getElementById('btn-friend-lines')?.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       this._showFriendLines = !this._showFriendLines;
       this.onToggleFriendLines?.(this._showFriendLines);
       this.updateInfoPanelEntity(entity, settlements);

@@ -10,6 +10,10 @@ export class InputHandler {
   private cameraStart = { x: 0, y: 0 };
   private dragDistance = 0;
 
+  // Track pointers for pinch-to-zoom support on mobile
+  private activePointers = new Map<number, PointerEvent>();
+  private initialPinchDistance = -1;
+
   private _hoveredTile: { x: number; y: number } | null = null;
   private _clickedTile: { x: number; y: number } | null = null;
 
@@ -28,9 +32,13 @@ export class InputHandler {
   }
 
   private bind(): void {
-    this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this));
-    this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
-    this.canvas.addEventListener('mouseup', this.onMouseUp.bind(this));
+    // Prevent the browser from trying to native-pan or refresh on mobile
+    this.canvas.style.touchAction = 'none';
+
+    this.canvas.addEventListener('pointerdown', this.onPointerDown.bind(this));
+    window.addEventListener('pointermove', this.onPointerMove.bind(this));
+    window.addEventListener('pointerup', this.onPointerUp.bind(this));
+    window.addEventListener('pointercancel', this.onPointerUp.bind(this));
     this.canvas.addEventListener('wheel', this.onWheel.bind(this), { passive: false });
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
     window.addEventListener('keydown', e => this.keys.add(e.key));
@@ -38,10 +46,6 @@ export class InputHandler {
   }
 
   private screenToWorld(sx: number, sy: number): { x: number; y: number } {
-    // Convert screen coordinates to world coordinates
-    // The rendering uses: ctx.translate(camera.x, camera.y); ctx.scale(camera.zoom, camera.zoom);
-    // So: screenX = worldX * zoom + cameraX
-    // Therefore: worldX = (screenX - cameraX) / zoom
     const wx = (sx - this.camera.x) / this.camera.zoom;
     const wy = (sy - this.camera.y) / this.camera.zoom;
     return { x: wx, y: wy };
@@ -54,9 +58,8 @@ export class InputHandler {
     };
   }
 
-  private getEventPos(e: MouseEvent): { x: number; y: number } {
+  private getEventPos(e: PointerEvent | WheelEvent): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
-    // Scale the mouse position if the canvas is being visually stretched
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
     return { 
@@ -65,7 +68,6 @@ export class InputHandler {
     };
   }
 
-  /** Find the entity closest to a world-pixel point, within a pick radius. */
   private pickEntity(wx: number, wy: number): EntityState | null {
     if (!this.em) return null;
     const ts = WORLD.TILE_SIZE;
@@ -81,51 +83,101 @@ export class InputHandler {
     return best;
   }
 
-  private onMouseDown(e: MouseEvent): void {
-
-    //stop ui clicks from interacting with the map
+  private onPointerDown(e: PointerEvent): void {
     if (e.target !== this.canvas) return;
 
-    if (e.button === 0) {
-      this.dragDistance = 0;
-      this.isDragging = true;
-      const pos = this.getEventPos(e);
-      this.dragStart = pos;
-      this.cameraStart = { x: this.camera.x, y: this.camera.y };
-    }
-    if (e.button === 2 || e.button === 1) {
-      this.isDragging = true;
-      const pos = this.getEventPos(e);
-      this.dragStart = pos;
-      this.cameraStart = { x: this.camera.x, y: this.camera.y };
+    this.canvas.setPointerCapture(e.pointerId);
+    this.activePointers.set(e.pointerId, e);
+
+    if (this.activePointers.size === 1) {
+      if (e.button === 0 || e.button === 1 || e.button === 2 || e.pointerType === 'touch') {
+        this.dragDistance = 0;
+        this.isDragging = true;
+        const pos = this.getEventPos(e);
+        this.dragStart = pos;
+        this.cameraStart = { x: this.camera.x, y: this.camera.y };
+      }
+    } else if (this.activePointers.size === 2) {
+      this.isDragging = false;
+      const pts = Array.from(this.activePointers.values());
+      const dx = pts[0].clientX - pts[1].clientX;
+      const dy = pts[0].clientY - pts[1].clientY;
+      this.initialPinchDistance = Math.hypot(dx, dy);
     }
   }
 
-  private onMouseMove(e: MouseEvent): void {
+  private onPointerMove(e: PointerEvent): void {
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, e);
+    }
 
-    //stop ui clicks from interacting with the map
-    if (e.target !== this.canvas) return;
+    if (e.target === this.canvas) {
+      const pos = this.getEventPos(e);
+      const world = this.screenToWorld(pos.x, pos.y);
+      this._hoveredTile = this.worldToTile(world.x, world.y);
+    }
 
-    const pos = this.getEventPos(e);
-    const world = this.screenToWorld(pos.x, pos.y);
-    this._hoveredTile = this.worldToTile(world.x, world.y);
+    if (this.activePointers.size === 2) {
+      const pts = Array.from(this.activePointers.values());
+      const dx = pts[0].clientX - pts[1].clientX;
+      const dy = pts[0].clientY - pts[1].clientY;
+      const dist = Math.hypot(dx, dy);
 
-    if (this.isDragging) {
+      if (this.initialPinchDistance > 0) {
+        const zoomDelta = dist / this.initialPinchDistance;
+        const newZoom = Math.max(0.5, Math.min(8, this.camera.zoom * zoomDelta));
+
+        if (newZoom !== this.camera.zoom) {
+          const cx = (pts[0].clientX + pts[1].clientX) / 2;
+          const cy = (pts[0].clientY + pts[1].clientY) / 2;
+          const centerPos = this.getEventPos({ clientX: cx, clientY: cy } as any);
+
+          const wx = (centerPos.x - this.camera.x) / this.camera.zoom;
+          const wy = (centerPos.y - this.camera.y) / this.camera.zoom;
+
+          this.camera.x = centerPos.x - wx * newZoom;
+          this.camera.y = centerPos.y - wy * newZoom;
+          this.camera.zoom = newZoom;
+        }
+      }
+      this.initialPinchDistance = dist;
+    } else if (this.isDragging && this.activePointers.has(e.pointerId)) {
+      const pos = this.getEventPos(e);
       const dx = pos.x - this.dragStart.x;
       const dy = pos.y - this.dragStart.y;
-      this.dragDistance += Math.hypot(dx - (this.camera.x - this.cameraStart.x),
-                                       dy - (this.camera.y - this.cameraStart.y));
+      this.dragDistance += Math.hypot(
+        dx - (this.camera.x - this.cameraStart.x),
+        dy - (this.camera.y - this.cameraStart.y)
+      );
       this.camera.x = this.cameraStart.x + dx;
       this.camera.y = this.cameraStart.y + dy;
     }
   }
 
-  private onMouseUp(e: MouseEvent): void {
+  private onPointerUp(e: PointerEvent): void {
+    const wasPinching = this.activePointers.size === 2;
+    this.activePointers.delete(e.pointerId);
 
-    //stop ui clicks from interacting with the map
-    if (e.target !== this.canvas) return;
+    try {
+      if (this.canvas.hasPointerCapture(e.pointerId)) {
+        this.canvas.releasePointerCapture(e.pointerId);
+      }
+    } catch (err) {}
 
-    if (e.button === 0) {
+    if (wasPinching) {
+      this.initialPinchDistance = -1;
+      // Prevent remaining finger from initiating an accidental click
+      if (this.activePointers.size === 1) {
+        const remainingEvent = Array.from(this.activePointers.values())[0];
+        this.dragStart = this.getEventPos(remainingEvent);
+        this.cameraStart = { x: this.camera.x, y: this.camera.y };
+        this.isDragging = true;
+        this.dragDistance = 50; 
+      }
+      return;
+    }
+
+    if (this.isDragging) {
       this.isDragging = false;
       if (this.dragDistance < 5) {
         const pos = this.getEventPos(e);
@@ -141,12 +193,9 @@ export class InputHandler {
       }
       this.dragDistance = 0;
     }
-    if (e.button === 2 || e.button === 1) this.isDragging = false;
   }
 
   private onWheel(e: WheelEvent): void {
-
-    //stop ui clicks from interacting with the map
     if (e.target !== this.canvas) return;
     
     e.preventDefault();
@@ -154,7 +203,6 @@ export class InputHandler {
     const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
     const newZoom = Math.max(0.5, Math.min(8, this.camera.zoom * zoomFactor));
 
-    // Zoom toward cursor
     const wx = (pos.x - this.camera.x) / this.camera.zoom;
     const wy = (pos.y - this.camera.y) / this.camera.zoom;
     this.camera.x = pos.x - wx * newZoom;
