@@ -23,7 +23,7 @@ export const WORLD = {
 };
 
 export const SIM = {
-  BASE_TICK_MS:    50,   // ms per sim tick
+  BASE_TICK_MS:    100,   // ms per sim tick
   TICKS_PER_YEAR:  200,  // display "years" pass this often
 };
 
@@ -35,11 +35,11 @@ export const GOD = {
 
 export const ENTITY = {
   MAX_AGE_VARIANCE:        0.3,
-  HUNGER_RATE:             0.003,   // slightly lower than original — sentients plan better
-  MOVE_ENERGY_COST:        0.0005,
+  HUNGER_RATE:             0.0015, 
+  MOVE_ENERGY_COST:        0.0003,
   REPRO_ENERGY_THRESHOLD:  0.7,
   REPRO_COOLDOWN_TICKS:    150,
-  VISION_RANGE:            8,
+  VISION_RANGE:            10,
   MUTATION_RATE:           0.04,
   CARRY_CAPACITY:          3.0,     // max food a single unit can carry
   TRIBE_BOND_RADIUS:       10,      // tiles within which tribe-bonding can occur

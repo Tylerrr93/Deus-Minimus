@@ -7,6 +7,7 @@ import { Renderer, Camera } from './ui/Renderer';
 import { UIManager } from './ui/UIManager';
 import { InputHandler } from './ui/InputHandler';
 import { SIM, CANVAS, WORLD } from './config/constants';
+import { EntityState } from './entities/Entity';
 
 class Game {
   private sim: Simulation;
@@ -20,6 +21,9 @@ class Game {
   private lastTickTime = 0;
   private accumulator = 0;
   private selectedPowerId: string | null = null;
+
+  private selectedTile: { x: number; y: number } | null = null;
+  private selectedEntity: EntityState | null = null;
 
   constructor() {
     const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -38,8 +42,8 @@ class Game {
     );
     this.ui    = new UIManager();
     this.input = new InputHandler(canvas, this.camera);
+    this.input.setEntityManager(this.sim.entities);
 
-    // Center camera on world
     const worldCenterX = (this.sim.world.cols * WORLD.TILE_SIZE) / 2;
     const worldCenterY = (this.sim.world.rows * WORLD.TILE_SIZE) / 2;
     this.input.centerCamera(worldCenterX, worldCenterY);
@@ -68,24 +72,50 @@ class Game {
         id ? 'crosshair' : 'default';
     };
 
-    this.input.onTileClick = (tile) => {
-      if (!this.selectedPowerId) return;
-      const result = this.sim.godPowers.execute(
-        this.selectedPowerId,
-        this.sim.year,
-        this.sim.world,
-        this.sim.entities,
-        this.sim.settlements,
-        this.sim.getState() as any,
-        tile,
-      );
-      if (result) {
-        this.ui.pushNotification(result, 'minor');
-        this.renderer.markTilesDirty();
+    this.input.onEntityClick = (entity) => {
+      if (this.selectedPowerId) return;
+      if (this.selectedEntity?.id === entity.id) {
+        this.selectedEntity = null;
+        this.selectedTile = null;
+        this.ui.clearInfoPanel();
+      } else {
+        this.selectedEntity = entity;
+        this.selectedTile = null;
+        this.ui.updateInfoPanelEntity(entity, this.sim.settlements);
       }
-      this.ui.clearSelectedPower();
-      this.selectedPowerId = null;
-      (document.getElementById('game-canvas') as HTMLCanvasElement).style.cursor = 'default';
+    };
+
+    this.input.onTileClick = (tile) => {
+      if (this.selectedPowerId) {
+        const result = this.sim.godPowers.execute(
+          this.selectedPowerId,
+          this.sim.year,
+          this.sim.world,
+          this.sim.entities,
+          this.sim.settlements,
+          this.sim.getState() as any,
+          tile,
+        );
+        if (result) {
+          this.ui.pushNotification(result, 'minor');
+          this.renderer.markTilesDirty();
+        }
+        this.ui.clearSelectedPower();
+        this.selectedPowerId = null;
+        (document.getElementById('game-canvas') as HTMLCanvasElement).style.cursor = 'default';
+        return;
+      }
+
+      if (this.selectedTile?.x === tile.x && this.selectedTile?.y === tile.y) {
+        this.selectedTile = null;
+        this.ui.clearInfoPanel();
+      } else {
+        this.selectedTile = tile;
+        this.selectedEntity = null;
+        const tileData = this.sim.world.getTile(tile.x, tile.y);
+        if (tileData) this.ui.updateInfoPanelTile(tileData);
+        else this.ui.clearInfoPanel();
+      }
     };
   }
 
@@ -111,6 +141,10 @@ class Game {
           this.sim.stages,
           this.sim.settlements,
         );
+        this.input.setEntityManager(this.sim.entities);
+        this.selectedEntity = null;
+        this.selectedTile = null;
+        this.ui.clearInfoPanel();
         this.bindEvents();
       }
     });
@@ -125,7 +159,6 @@ class Game {
     if (!this.isPaused) {
       this.accumulator += dt * this.speed;
       const tickMs = SIM.BASE_TICK_MS;
-      // Cap ticks-per-frame at 4 to prevent spiral-of-death under load
       let ticks = 0;
       while (this.accumulator >= tickMs && ticks++ < 4) {
         this.sim.tick();
@@ -133,7 +166,23 @@ class Game {
       }
     }
 
-    this.renderer.render(this.camera, this.input.hoveredTile);
+    if (this.selectedEntity) {
+      let fresh: EntityState | null = null;
+      this.sim.entities.forEachAlive(e => {
+        if (e.id === this.selectedEntity!.id) fresh = e;
+      });
+      if (fresh) {
+        this.selectedEntity = fresh;
+        if (Math.floor(timestamp / 16) % 10 === 0) {
+          this.ui.updateInfoPanelEntity(this.selectedEntity, this.sim.settlements);
+        }
+      } else {
+        this.selectedEntity = null;
+        this.ui.clearInfoPanel();
+      }
+    }
+
+    this.renderer.render(this.camera, this.input.hoveredTile, this.selectedTile, this.selectedEntity);
 
     const state = this.sim.getState();
     const powers = this.sim.godPowers.getAvailablePowers(this.sim.year);

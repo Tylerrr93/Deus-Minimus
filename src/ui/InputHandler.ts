@@ -1,16 +1,27 @@
 import { Camera } from './Renderer';
 import { CANVAS, WORLD } from '../config/constants';
+import { EntityManager } from '../entities/EntityManager';
+import { EntityState } from '../entities/Entity';
 
 export class InputHandler {
   private keys: Set<string> = new Set();
   private isDragging = false;
   private dragStart = { x: 0, y: 0 };
   private cameraStart = { x: 0, y: 0 };
+  private dragDistance = 0;
 
   private _hoveredTile: { x: number; y: number } | null = null;
   private _clickedTile: { x: number; y: number } | null = null;
 
+  private em: EntityManager | null = null;
+
   onTileClick?: (tile: { x: number; y: number }) => void;
+  onEntityClick?: (entity: EntityState) => void;
+  onEmptyClick?: () => void;
+
+  setEntityManager(em: EntityManager): void {
+    this.em = em;
+  }
 
   constructor(private canvas: HTMLCanvasElement, private camera: Camera) {
     this.bind();
@@ -54,13 +65,29 @@ export class InputHandler {
     };
   }
 
+  /** Find the entity closest to a world-pixel point, within a pick radius. */
+  private pickEntity(wx: number, wy: number): EntityState | null {
+    if (!this.em) return null;
+    const ts = WORLD.TILE_SIZE;
+    const pickRadius = ts * 1.2;
+    let best: EntityState | null = null;
+    let bestDist = pickRadius;
+    this.em.forEachAlive(e => {
+      const ex = e.x * ts + ts * 0.5;
+      const ey = e.y * ts + ts * 0.5;
+      const dist = Math.hypot(wx - ex, wy - ey);
+      if (dist < bestDist) { bestDist = dist; best = e; }
+    });
+    return best;
+  }
+
   private onMouseDown(e: MouseEvent): void {
     if (e.button === 0) {
+      this.dragDistance = 0;
+      this.isDragging = true;
       const pos = this.getEventPos(e);
-      const world = this.screenToWorld(pos.x, pos.y);
-      const tile = this.worldToTile(world.x, world.y);
-      this._clickedTile = tile;
-      this.onTileClick?.(tile);
+      this.dragStart = pos;
+      this.cameraStart = { x: this.camera.x, y: this.camera.y };
     }
     if (e.button === 2 || e.button === 1) {
       this.isDragging = true;
@@ -76,12 +103,32 @@ export class InputHandler {
     this._hoveredTile = this.worldToTile(world.x, world.y);
 
     if (this.isDragging) {
-      this.camera.x = this.cameraStart.x + (pos.x - this.dragStart.x);
-      this.camera.y = this.cameraStart.y + (pos.y - this.dragStart.y);
+      const dx = pos.x - this.dragStart.x;
+      const dy = pos.y - this.dragStart.y;
+      this.dragDistance += Math.hypot(dx - (this.camera.x - this.cameraStart.x),
+                                       dy - (this.camera.y - this.cameraStart.y));
+      this.camera.x = this.cameraStart.x + dx;
+      this.camera.y = this.cameraStart.y + dy;
     }
   }
 
   private onMouseUp(e: MouseEvent): void {
+    if (e.button === 0) {
+      this.isDragging = false;
+      if (this.dragDistance < 5) {
+        const pos = this.getEventPos(e);
+        const world = this.screenToWorld(pos.x, pos.y);
+        const tile = this.worldToTile(world.x, world.y);
+        this._clickedTile = tile;
+        const entity = this.pickEntity(world.x, world.y);
+        if (entity) {
+          this.onEntityClick?.(entity);
+        } else {
+          this.onTileClick?.(tile);
+        }
+      }
+      this.dragDistance = 0;
+    }
     if (e.button === 2 || e.button === 1) this.isDragging = false;
   }
 

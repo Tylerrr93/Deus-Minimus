@@ -1,4 +1,4 @@
-# Deus Minimus   change
+# Deus Minimus
 
 > *A god of little consequence.*
 

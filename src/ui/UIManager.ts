@@ -6,6 +6,9 @@ import { SimulationState } from '../simulation/Simulation';
 import { GodPower } from '../godpowers/godPowerDefinitions';
 import { FiredEvent } from '../events/EventManager';
 import { STAGE_DEFINITIONS } from '../stages/stageDefinitions';
+import { EntityState } from '../entities/Entity';
+import { Tile } from '../world/Tile';
+import { SettlementManager } from '../entities/SettlementManager';
 
 export interface UIState {
   selectedPowerId: string | null;
@@ -30,6 +33,7 @@ export class UIManager {
   private notifContainer:  HTMLElement;
   private stageBar:        HTMLElement;
   private popChart:        HTMLElement;
+  private infoPanel:       HTMLElement;
   private notifications:   Notification[] = [];
   private _selectedPowerId: string | null = null;
 
@@ -43,6 +47,7 @@ export class UIManager {
     this.notifContainer = document.getElementById('notifications')!;
     this.stageBar       = document.getElementById('stage-bar')!;
     this.popChart       = document.getElementById('pop-chart')!;
+    this.infoPanel      = document.getElementById('info-panel')!;
   }
 
   update(state: SimulationState, availablePowers: GodPower[]): void {
@@ -201,6 +206,90 @@ export class UIManager {
 
   pushNotification(message: string, severity: string = 'minor'): void {
     this.notifications.push({ id: _notifId++, message, severity, opacity: 1, age: 0 });
+  }
+
+  updateInfoPanelEntity(entity: EntityState, settlements: SettlementManager): void {
+    const typeColors: Record<string, string> = {
+      hunter_gatherer: '#ffcc44', villager: '#88dd66',
+      farmer: '#44cc88', craftsman: '#cc8844',
+      warrior: '#ff4444', merchant: '#aa88ff',
+      scholar: '#44ddff', noble: '#ffaa22',
+    };
+    const color = typeColors[entity.type] ?? '#ffffff';
+    const label = entity.type.replace(/_/g, ' ');
+    const energyPct = Math.round(entity.energy * 100);
+    const energyColor = entity.energy > 0.6 ? '#44cc44' : entity.energy > 0.3 ? '#ccaa22' : '#cc2222';
+    const settl = entity.settlementId >= 0 ? settlements.getById(entity.settlementId) : null;
+    const settlName = settl ? settl.name : 'None';
+    const carrying = entity.carryingFood > 0 ? `🌾 ${entity.carryingFood.toFixed(1)} food`
+      : entity.carryingResource > 0 ? `⛏ ${entity.carryingResource.toFixed(1)} ${entity.carryingResourceType ?? ''}`
+      : 'Nothing';
+
+    const geneBar = (val: number) => {
+      const pct = Math.round(val * 100);
+      const col = val > 0.6 ? '#44cc88' : val > 0.35 ? '#ccaa22' : '#cc4444';
+      return `<div class="gene-bar-wrap"><div class="gene-bar" style="width:${pct}%;background:${col}"></div></div>`;
+    };
+
+    this.infoPanel.innerHTML = `
+      <div class="info-header">
+        <span class="info-type-dot" style="background:${color}"></span>
+        <span class="info-title" style="color:${color}">${label.toUpperCase()}</span>
+        <span class="info-id">#${entity.id}</span>
+      </div>
+      <div class="info-grid">
+        <div class="info-row"><span class="info-label">Age</span><span class="info-val">${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}</span></div>
+        <div class="info-row"><span class="info-label">Energy</span><span class="info-val" style="color:${energyColor}">${energyPct}%</span></div>
+        <div class="info-row"><span class="info-label">Position</span><span class="info-val">${entity.x}, ${entity.y}</span></div>
+        <div class="info-row"><span class="info-label">Home</span><span class="info-val">${settlName}</span></div>
+        <div class="info-row"><span class="info-label">Tribe</span><span class="info-val">${entity.tribeId >= 0 ? '#' + entity.tribeId : 'Solitary'}</span></div>
+        <div class="info-row"><span class="info-label">Carrying</span><span class="info-val">${carrying}</span></div>
+      </div>
+      <div class="info-divider"></div>
+      <div class="info-genes">
+        <div class="info-genes-title">Genes</div>
+        ${Object.entries(entity.genes).map(([k, v]) =>
+          `<div class="gene-row"><span class="gene-name">${k.substring(0,4)}</span>${geneBar(v)}<span class="gene-val">${Math.round(v * 100)}</span></div>`
+        ).join('')}
+      </div>
+    `;
+    this.infoPanel.classList.add('active');
+  }
+
+  updateInfoPanelTile(tile: Tile): void {
+    const typeIcons: Record<string, string> = {
+      deep_water: '🌊', shallow_water: '🌊', beach: '🏖',
+      plains: '🌿', forest: '🌲', mountain: '⛰', peak: '🏔',
+    };
+    const icon = typeIcons[tile.type] ?? '◻';
+    const label = tile.type.replace(/_/g, ' ');
+    const resources = tile.resources.length > 0
+      ? tile.resources.map(r => `<div class="info-row"><span class="info-label">${r.type}</span><span class="info-val">${Math.round(r.amount)}/${r.max}</span></div>`).join('')
+      : '<div class="info-row"><span class="info-label">Resources</span><span class="info-val">—</span></div>';
+
+    this.infoPanel.innerHTML = `
+      <div class="info-header">
+        <span class="info-icon">${icon}</span>
+        <span class="info-title">${label.toUpperCase()}</span>
+        <span class="info-id">(${tile.x}, ${tile.y})</span>
+      </div>
+      <div class="info-grid">
+        <div class="info-row"><span class="info-label">Elevation</span><span class="info-val">${tile.elevation.toFixed(2)}</span></div>
+        <div class="info-row"><span class="info-label">Fertility</span><span class="info-val">${tile.fertility.toFixed(2)}</span></div>
+        <div class="info-row"><span class="info-label">Moisture</span><span class="info-val">${tile.moisture.toFixed(2)}</span></div>
+        ${tile.improvement ? `<div class="info-row"><span class="info-label">Structure</span><span class="info-val">${tile.improvement}</span></div>` : ''}
+        ${tile.pollution > 0 ? `<div class="info-row"><span class="info-label">Pollution</span><span class="info-val" style="color:#cc4444">${(tile.pollution * 100).toFixed(0)}%</span></div>` : ''}
+        ${tile.claimed >= 0 ? `<div class="info-row"><span class="info-label">Claimed by</span><span class="info-val">Tribe #${tile.claimed}</span></div>` : ''}
+      </div>
+      <div class="info-divider"></div>
+      <div class="info-grid">${resources}</div>
+    `;
+    this.infoPanel.classList.add('active');
+  }
+
+  clearInfoPanel(): void {
+    this.infoPanel.classList.remove('active');
+    this.infoPanel.innerHTML = '';
   }
 
   get selectedPowerId(): string | null { return this._selectedPowerId; }

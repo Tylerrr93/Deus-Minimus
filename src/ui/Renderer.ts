@@ -81,10 +81,9 @@ export class Renderer {
 
   markTilesDirty(): void { this.tilesDirty = true; }
 
-  render(camera: Camera, highlightTile: { x: number; y: number } | null): void {
+  render(camera: Camera, highlightTile: { x: number; y: number } | null, selectedTile: { x: number; y: number } | null, selectedEntity: EntityState | null): void {
     const ctx = this.ctx;
     this.frameCount++;
-    // Use a slow sine for ambient pulsing — cheap to compute once per frame
     this.animOffset = (this.frameCount * 0.04) % (Math.PI * 2);
 
     ctx.fillStyle = CANVAS.BG_COLOR;
@@ -96,9 +95,11 @@ export class Renderer {
 
     this.renderTileLayer(ctx, camera);
     this.renderGrid(ctx, camera);
-    this.renderEntities(ctx, camera);
+    this.renderEntities(ctx, camera, selectedEntity);
     this.renderSettlementLabels(ctx, camera);
     this.renderHighlight(ctx, highlightTile);
+    this.renderSelectedTile(ctx, selectedTile);
+    this.renderSelectedEntityRing(ctx, selectedEntity);
 
     ctx.restore();
   }
@@ -254,7 +255,7 @@ export class Renderer {
    * to the next. This keeps fillStyle changes to one per entity-type instead
    * of one per entity (8 changes total vs. potentially 1000+).
    */
-  private renderEntities(ctx: CanvasRenderingContext2D, camera: Camera): void {
+  private renderEntities(ctx: CanvasRenderingContext2D, camera: Camera, selectedEntity: EntityState | null): void {
     const ts = WORLD.TILE_SIZE;
     const invZoom = 1 / camera.zoom;
 
@@ -290,6 +291,22 @@ export class Renderer {
         const size = baseSize * (0.75 + e.genes.resilience * 0.5) * pulse;
 
         ctx.globalAlpha = 0.45 + e.energy * 0.55;
+
+        // Glow ring for selected entity
+        if (selectedEntity && e.id === selectedEntity.id) {
+          const ringPulse = 1 + Math.sin(this.animOffset * 4) * 0.3;
+          ctx.globalAlpha = 0.85;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.arc(px, py, size * 1.8 * ringPulse, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = '#ffee88';
+          ctx.lineWidth = 0.4;
+          ctx.beginPath();
+          ctx.arc(px, py, size * 2.4 * ringPulse, 0, Math.PI * 2);
+          ctx.stroke();
+        }
 
         this.drawEntityShape(ctx, type, e, px, py, size, color);
 
@@ -461,6 +478,64 @@ export class Renderer {
     ctx.lineWidth = 0.5;
     ctx.globalAlpha = 0.5 + Math.sin(this.animOffset * 3) * 0.5;
     ctx.strokeRect(tile.x * ts, tile.y * ts, ts, ts);
+    ctx.globalAlpha = 1;
+  }
+
+  // ── Selected tile highlight ───────────────────────────────
+
+  private renderSelectedTile(
+    ctx: CanvasRenderingContext2D,
+    tile: { x: number; y: number } | null
+  ): void {
+    if (!tile) return;
+    const ts = WORLD.TILE_SIZE;
+    // Solid corner brackets for selected tile
+    const m = 0.5; // margin
+    const b = ts * 0.28; // bracket length
+    ctx.strokeStyle = '#ffee44';
+    ctx.lineWidth = 0.7;
+    ctx.globalAlpha = 0.9 + Math.sin(this.animOffset * 2) * 0.1;
+    const x = tile.x * ts + m;
+    const y = tile.y * ts + m;
+    const w = ts - m * 2;
+    const h = ts - m * 2;
+    ctx.beginPath();
+    // TL
+    ctx.moveTo(x, y + b); ctx.lineTo(x, y); ctx.lineTo(x + b, y);
+    // TR
+    ctx.moveTo(x + w - b, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + b);
+    // BR
+    ctx.moveTo(x + w, y + h - b); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - b, y + h);
+    // BL
+    ctx.moveTo(x + b, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - b);
+    ctx.stroke();
+    // Subtle fill tint
+    ctx.globalAlpha = 0.08 + Math.sin(this.animOffset * 2) * 0.04;
+    ctx.fillStyle = '#ffee44';
+    ctx.fillRect(tile.x * ts, tile.y * ts, ts, ts);
+    ctx.globalAlpha = 1;
+  }
+
+  // ── Selected entity outer ring ────────────────────────────
+
+  private renderSelectedEntityRing(
+    ctx: CanvasRenderingContext2D,
+    entity: EntityState | null
+  ): void {
+    if (!entity) return;
+    const ts = WORLD.TILE_SIZE;
+    const px = entity.x * ts + ts * 0.5;
+    const py = entity.y * ts + ts * 0.5;
+    // Outer pulsing ring
+    const pulse = 1 + Math.sin(this.animOffset * 3) * 0.2;
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = '#ffee44';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([1.5, 1.5]);
+    ctx.beginPath();
+    ctx.arc(px, py, ts * 0.72 * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }
 

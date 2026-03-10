@@ -433,3 +433,41 @@ body {
   transition: border-color 0.2s;
 }
 #btn-help:hover { border-color: var(--accent); color: var(--accent-glow); }
+
+/* ── Info Panel ── */
+#info-panel {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  width: 320px;
+  background: rgba(10, 10, 20, 0.92);
+  border: 1px solid var(--panel-border);
+  border-top: 2px solid var(--accent);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 -4px 24px rgba(136, 85, 255, 0.15);
+  display: none;
+  transform: translateX(-50%);
+}
+#info-panel.active { display: block; }
+.info-header { display:flex; align-items:center; gap:6px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--panel-border); }
+.info-type-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.info-icon { font-size:13px; }
+.info-title { font-family:var(--font-serif); font-size:11px; letter-spacing:0.1em; color:var(--accent-glow); flex:1; }
+.info-id { color:var(--text-dim); font-size:9px; }
+.info-grid { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; }
+.info-row { display:flex; justify-content:space-between; align-items:center; padding:1px 0; }
+.info-label { color:var(--text-dim); text-transform:uppercase; font-size:9px; letter-spacing:0.05em; }
+.info-val { color:var(--text); font-size:10px; text-align:right; }
+.info-divider { height:1px; background:var(--panel-border); margin:7px 0; }
+.info-genes { display:flex; flex-direction:column; gap:2px; }
+.info-genes-title { font-family:var(--font-serif); font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-dim); margin-bottom:3px; }
+.gene-row { display:flex; align-items:center; gap:5px; }
+.gene-name { width:28px; color:var(--text-dim); font-size:9px; text-transform:capitalize; flex-shrink:0; }
+.gene-bar-wrap { flex:1; height:4px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
+.gene-bar { height:100%; border-radius:2px; }
+.gene-val { width:24px; text-align:right; color:var(--text-dim); font-size:9px; }

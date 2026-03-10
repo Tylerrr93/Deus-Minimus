@@ -96,7 +96,7 @@ export function createEntity(
     x, y,
     energy: 0.8 + Math.random() * 0.2,
     age: 0,
-    maxAge: (40 + Math.random() * 40) * (1 + g.resilience * 0.5),
+    maxAge: (120 + Math.random() * 80) * (1 + g.resilience * 0.5),
     genes: g,
     tribeId,
     settlementId: -1,
