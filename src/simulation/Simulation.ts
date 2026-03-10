@@ -41,7 +41,7 @@ export class Simulation {
     this.settlements = new SettlementManager(this.world);
     this.entities    = new EntityManager(this.world, this.settlements);
 
-    this.entities.spawnAtRandom('hunter_gatherer', 40);
+    this.entities.spawnAtRandom('wanderer', 40);
   }
 
   tick(): void {
@@ -84,7 +84,7 @@ export class Simulation {
   private _yearlyLogic(): void {
     // Safety net respawn
     if (this.entities.getCount() < 6) {
-      this.entities.spawnAtRandom('hunter_gatherer', 8);
+      this.entities.spawnAtRandom('wanderer', 8);
       this._pushLog('Wanderers arrive from distant lands.');
     }
   }

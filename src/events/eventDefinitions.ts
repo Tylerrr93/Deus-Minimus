@@ -202,7 +202,7 @@ export const GAME_EVENTS: GameEvent[] = [
     requiredMechanic: 'writing',
     probability: 0.006, cooldownYears: 120,
     effect: (_world, em) => {
-      const scholars = em.getAlive().filter(e => e.type === 'scholar' || e.type === 'noble');
+      const scholars = em.getAlive().filter(e => e.type === 'scholar' || e.type === 'elder');
       for (const s of scholars) {
         s.genes.intelligence = Math.min(1, s.genes.intelligence + 0.06);
         s.genes.creativity   = Math.min(1, s.genes.creativity   + 0.06);
