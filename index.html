@@ -10,14 +10,13 @@
 </head>
 <body>
   <div id="app">
-    <div id="stage-bar-container">
-      <div id="stage-bar"></div>
-    </div>
     <div id="canvas-wrapper">
       <canvas id="game-canvas"></canvas>
       <div id="notifications"></div>
       <div id="info-panel"></div>
     </div>
+
+    <!-- Left sidebar -->
     <div id="sidebar" class="panel left-panel">
       <div id="title-block">
         <h1 class="game-title">DEUS<br>MINIMUS</h1>
@@ -36,21 +35,25 @@
         </div>
       </div>
     </div>
-    <div id="event-log" class="panel right-panel"></div>
+
+    <!-- Right panel: activity log -->
+    <div id="activity-log" class="panel right-panel"></div>
+
+    <!-- Help overlay -->
     <div id="help-overlay">
       <div class="help-box">
         <h2>Deus Minimus</h2>
-        <p>You watch. They live. You cannot intervene.</p>
+        <p>You watch. They live. They find each other.</p>
         <p><b>Right-click drag</b> or <b>WASD</b> to pan the world.</p>
         <p><b>Scroll wheel</b> to zoom in and out.</p>
-        <p><b>Click an entity</b> to inspect them. Click again to deselect.</p>
-        <p>Hunter-gatherers begin scattered. They will find mates, raise children, form tribes, and build camps — entirely on their own.</p>
+        <p><b>Click an entity</b> to inspect them.</p>
         <hr/>
         <p class="help-tip">
-          ⬡ Babies follow their parent and appear smaller until they grow up.<br>
-          ⬡ Animated sparks show gathering and mining actions.<br>
-          ⬡ Entities carry food and resources back to their camp's shared stockpile.<br>
-          ⬡ Well-fed, ambitious tribe members will naturally found new camps.
+          ⬡ Entities wander, gather food, form bonds, and reproduce.<br>
+          ⬡ When enough people cluster together, a settlement forms naturally.<br>
+          ⬡ Once settled and fed, they will begin building roads and rough homes.<br>
+          ⬡ Hover over a settlement marker to see its level and food stores.<br>
+          ⬡ 🔨 spark = entity is working on a building project.
         </p>
         <button onclick="document.getElementById('help-overlay').classList.add('hidden')">Begin</button>
       </div>

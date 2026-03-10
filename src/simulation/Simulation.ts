@@ -1,14 +1,11 @@
 // ============================================================
-// SIMULATION — master controller.
+// SIMULATION — master controller
 // ============================================================
 
 import { World } from '../world/World';
 import { EntityManager } from '../entities/EntityManager';
-import { SettlementManager } from '../entities/SettlementManager';
-import { StageManager } from '../stages/StageManager';
-import { StageDefinition } from '../stages/stageDefinitions';
-import { EventManager, FiredEvent } from '../events/EventManager';
-import { SIM, ENTITY } from '../config/constants';
+import { SettlementManager, Settlement } from '../entities/SettlementManager';
+import { SIM } from '../config/constants';
 
 export interface SimulationState {
   tick:               number;
@@ -17,53 +14,62 @@ export interface SimulationState {
   totalBirths:        number;
   totalDeaths:        number;
   resourcesExtracted: number;
-  tribesFormed:       number;
   settlementsBuilt:   number;
   highestPopulation:  number;
-  recentEvents:       FiredEvent[];
-  stageName:          string;
-  stageProgress:      number;
   typeDistribution:   Record<string, number>;
   settlementLevels:   Record<string, number>;
+  activityLog:        string[];
 }
-
-let _nextTribeId = 1;
 
 export class Simulation {
   readonly world:       World;
   readonly settlements: SettlementManager;
   readonly entities:    EntityManager;
-  readonly stages:      StageManager;
-  readonly events:      EventManager;
 
   private _tick         = 0;
   private _year         = 0;
   private _highestPop   = 0;
-  private _tribesFormed = 0;
+  private _activityLog: string[] = [];
 
-  onStageTransition?: (prev: StageDefinition, next: StageDefinition) => void;
-  onEvent?: (event: FiredEvent) => void;
+  /** Called when a settlement is dynamically founded. */
+  onSettlementFounded?: (s: Settlement) => void;
+  /** Called when a settlement levels up. */
+  onSettlementLevelUp?: (s: Settlement) => void;
 
   constructor(_seed?: number) {
-    this.world = new World(_seed);
-
-    this.stages = new StageManager((prev, next) => {
-      this.onStageTransition?.(prev, next);
-    });
-
+    this.world       = new World(_seed);
     this.settlements = new SettlementManager(this.world);
-
-    this.entities = new EntityManager(this.world, this.settlements);
-
-    this.events = new EventManager((mech) => this.stages.hasMechanic(mech));
+    this.entities    = new EntityManager(this.world, this.settlements);
 
     this.entities.spawnAtRandom('hunter_gatherer', 40);
   }
 
   tick(): void {
     this._tick++;
+
     this.world.tick();
-    this.settlements.tick((_m) => true);  // all mechanics always available now
+
+    // Dynamic settlement formation — runs every N ticks
+    if (this._tick % SIM.CLUSTER_CHECK_INTERVAL === 0) {
+      const formed = this.settlements.checkForNewSettlements(this.entities.getAlive());
+      for (const s of formed) {
+        const msg = `${s.name} founded — ${s.population} people settled together.`;
+        this._pushLog(msg);
+        this.onSettlementFounded?.(s);
+      }
+    }
+
+    this.settlements.tick(this.entities.getAlive());
+
+    // Check for level-ups that happened this tick
+    for (const s of this.settlements.getAll()) {
+      if (s.justLeveledUp) {
+        const msg = `${s.name} grew into a ${s.level === 2 ? 'Hamlet' : 'Village'}!`;
+        this._pushLog(msg);
+        this.onSettlementLevelUp?.(s);
+      }
+    }
+
     this.entities.tick(this._tick);
 
     const pop = this.entities.getCount();
@@ -71,74 +77,21 @@ export class Simulation {
 
     if (this._tick % SIM.TICKS_PER_YEAR === 0) {
       this._year++;
-      this.stages.checkTransition(this.buildStats(), this.world, this.entities, this.settlements);
-      this.yearlyLogic();
-      const ev = this.events.tick(this._year, this.buildStats(), this.world, this.entities);
-      if (ev) this.onEvent?.(ev);
+      this._yearlyLogic();
     }
   }
 
-  private yearlyLogic(): void {
-    // Safety net: if population collapses, seed a few new arrivals
+  private _yearlyLogic(): void {
+    // Safety net respawn
     if (this.entities.getCount() < 6) {
       this.entities.spawnAtRandom('hunter_gatherer', 8);
-    }
-
-    // Tribe formation — every 2 years
-    if (this._year % 2 === 0) this.tryFormTribes();
-
-    // Tribe count stat
-    const tribeIds = new Set(
-      this.entities.getAlive().map(e => e.tribeId).filter(id => id !== -1)
-    );
-    this._tribesFormed = tribeIds.size;
-  }
-
-  private tryFormTribes(): void {
-    const ungrouped = this.entities.getAlive().filter(e =>
-      e.tribeId === -1 && e.type === 'hunter_gatherer' && !e.isChild
-    );
-
-    for (const leader of ungrouped) {
-      if (leader.tribeId !== -1) continue;
-      if (leader.genes.sociability < 0.35) continue;
-
-      const nearby = this.entities.getAlive().filter(e =>
-        e.tribeId === -1 && !e.isChild &&
-        Math.abs(e.x - leader.x) <= ENTITY.TRIBE_BOND_RADIUS &&
-        Math.abs(e.y - leader.y) <= ENTITY.TRIBE_BOND_RADIUS
-      );
-
-      if (nearby.length >= 2) {
-        const newTribeId = _nextTribeId++;
-        for (const member of [leader, ...nearby.slice(0, 7)]) {
-          member.tribeId = newTribeId;
-        }
-        
-        const settlement = this.settlements.found(leader.x, leader.y, newTribeId);
-        if (settlement) {
-            for (const member of [leader, ...nearby.slice(0, 7)]) {
-                member.settlementId = settlement.id; // Assign them to the new home
-            }
-            // Force the renderer to update the tile cache to show the new settlement
-        }
-      }
+      this._pushLog('Wanderers arrive from distant lands.');
     }
   }
 
-  private buildStats() {
-    return {
-      totalEntities:      this.entities.getCount(),
-      totalYears:         this._year,
-      totalDeaths:        this.entities.totalDeaths,
-      totalBirths:        this.entities.totalBirths,
-      highestPopulation:  this._highestPop,
-      resourcesExtracted: Math.floor(this.entities.resourcesExtracted),
-      tribesFormed:       this._tribesFormed,
-      settlementsBuilt:   this.settlements.getCount(),
-      techDiscovered:     0,
-      stage:              this.stages.currentId,
-    };
+  private _pushLog(msg: string): void {
+    this._activityLog.push(`[${this._year}] ${msg}`);
+    if (this._activityLog.length > 30) this._activityLog.shift();
   }
 
   getState(): SimulationState {
@@ -149,14 +102,11 @@ export class Simulation {
       totalBirths:        this.entities.totalBirths,
       totalDeaths:        this.entities.totalDeaths,
       resourcesExtracted: Math.floor(this.entities.resourcesExtracted),
-      tribesFormed:       this._tribesFormed,
       settlementsBuilt:   this.settlements.getCount(),
       highestPopulation:  this._highestPop,
-      recentEvents:       this.events.getRecentHistory(8),
-      stageName:          this.stages.current.name,
-      stageProgress:      this.stages.progress,
       typeDistribution:   this.entities.getTypeDistribution(),
       settlementLevels:   this.settlements.getLevelDistribution(),
+      activityLog:        [...this._activityLog].reverse().slice(0, 12),
     };
   }
 

@@ -1,11 +1,5 @@
 // ============================================================
 // ENTITY MANAGER
-// Orchestrates all living entities each tick.
-//
-// PERFORMANCE:
-//   - SpatialGrid replaces O(n²) neighbour scan with O(k) local lookup
-//   - aliveIds Set avoids re-filtering every frame
-//   - forEachAlive() allows renderer to iterate without allocation
 // ============================================================
 
 import { EntityState, EntityType, createEntity, createGenes } from './Entity';
@@ -13,21 +7,20 @@ import { BEHAVIOUR_PIPELINES, BehaviourContext, BehaviourFn } from './Behaviours
 import { World } from '../world/World';
 import { TILE_PASSABLE } from '../world/Tile';
 import { SpatialGrid } from './SpatialGrid';
-import { ENTITY, WORLD } from '../config/constants';
+import { ENTITY, SETTLEMENT, WORLD } from '../config/constants';
 import { SettlementManager } from './SettlementManager';
 
 export class EntityManager {
-  private entities: Map<number, EntityState> = new Map();
-  /** Live set of alive entity IDs — avoids filter() every frame. */
-  private aliveIds: Set<number> = new Set();
-  private grid: SpatialGrid;
+  private entities:  Map<number, EntityState> = new Map();
+  private aliveIds:  Set<number>              = new Set();
+  private grid:      SpatialGrid;
 
-  private _totalBirths  = 0;
-  private _totalDeaths  = 0;
-  private _resourcesExtracted = 0;
+  private _totalBirths         = 0;
+  private _totalDeaths         = 0;
+  private _resourcesExtracted  = 0;
 
   constructor(
-    private readonly world: World,
+    private readonly world:       World,
     private readonly settlements: SettlementManager,
   ) {
     this.grid = new SpatialGrid(WORLD.COLS, WORLD.ROWS, 8);
@@ -35,16 +28,11 @@ export class EntityManager {
 
   // ── Spawning ─────────────────────────────────────────────
 
-  spawn(
-    type: EntityType,
-    x: number, y: number,
-    genes?: any,
-    tribeId: number = -1,
-  ): EntityState | null {
+  spawn(type: EntityType, x: number, y: number, genes?: any): EntityState | null {
     const tile = this.world.getTile(x, y);
     if (!tile || !TILE_PASSABLE[tile.type]) return null;
 
-    const e = createEntity(type, x, y, genes, tribeId);
+    const e = createEntity(type, x, y, genes);
     this.entities.set(e.id, e);
     this.aliveIds.add(e.id);
     this.grid.insert(e.id, x, y);
@@ -65,7 +53,7 @@ export class EntityManager {
 
   tick(tickNum: number): void {
     const toRemove: number[] = [];
-    const toSpawn: Array<{ type: EntityType; x: number; y: number; genes: any; tribeId: number; parentId: number }> = [];
+    const toSpawn: Array<{ type: EntityType; x: number; y: number; genes: any; parentId: number }> = [];
 
     for (const id of this.aliveIds) {
       const entity = this.entities.get(id);
@@ -73,8 +61,7 @@ export class EntityManager {
 
       const pipeline: BehaviourFn[] = BEHAVIOUR_PIPELINES[entity.type] ?? [];
 
-      // ── Cheap spatial neighbour lookup ────────────────────
-      const nearIds = this.grid.query(entity.x, entity.y, ENTITY.VISION_RANGE);
+      const nearIds    = this.grid.query(entity.x, entity.y, ENTITY.VISION_RANGE);
       const neighbours: EntityState[] = [];
       for (const nid of nearIds) {
         if (nid === id) continue;
@@ -106,33 +93,14 @@ export class EntityManager {
         if (result.reproduce) {
           const near = this.world.findPassableTileNear(entity.x, entity.y, 3);
           if (near) {
-            const childType = this.specializeChild(entity.type, entity);
+            const childType   = this.specializeChild(entity.type, entity);
             const otherParent = result.reproduceWith ? this.entities.get(result.reproduceWith) : undefined;
             toSpawn.push({
               type: childType,
               x: near.x, y: near.y,
               genes: createGenes(entity.genes, otherParent?.genes),
-              tribeId: entity.tribeId,
               parentId: entity.id,
             });
-          }
-        }
-
-        if (result.foundCamp) {
-          const near = this.world.findPassableTileNear(entity.x, entity.y, ENTITY.SETTLEMENT_FOUND_RADIUS);
-          if (near) {
-            const settlement = this.settlements.found(near.x, near.y, entity.tribeId);
-            if (settlement) {
-              // Assign the founder and nearby tribe members
-              this.assignToSettlement(entity, settlement.id);
-              const nearbyTribe = [...this.entities.values()].filter(e =>
-                e.alive && !e.isChild && e.tribeId === entity.tribeId && e.settlementId === -1 &&
-                Math.abs(e.x - entity.x) + Math.abs(e.y - entity.y) <= 14
-              );
-              for (const member of nearbyTribe.slice(0, 8)) {
-                this.assignToSettlement(member, settlement.id);
-              }
-            }
           }
         }
 
@@ -140,15 +108,13 @@ export class EntityManager {
           this._resourcesExtracted += result.extractResource.amount;
         }
 
-        if (result.depositFood) {
-          if (entity.settlementId !== -1) {
-            this.settlements.depositFood(entity.settlementId, result.depositFood);
-          }
+        if (result.depositFood && entity.settlementId !== -1) {
+          this.settlements.depositFood(entity.settlementId, result.depositFood);
         }
 
-        if (result.researchTick && entity.settlementId !== -1) {
-          const s = this.settlements.getById(entity.settlementId);
-          if (s) s.techPoints += result.researchTick;
+        if (result.workOnProject) {
+          const { projectId, tileX, tileY } = result.workOnProject;
+          this.settlements.advanceProject(projectId, tileX, tileY, entity.id, SETTLEMENT.BUILD_RATE);
         }
 
         if ((result.dx !== undefined || result.dy !== undefined) && !result.die) {
@@ -157,9 +123,14 @@ export class EntityManager {
           this.moveEntity(entity, nx, ny);
         }
       }
+
+      // Clear building project assignment if not actively building this tick
+      if (entity.actionAnim.type !== 'build') {
+        entity.buildingProjectId = -1;
+      }
     }
 
-    // ── Deaths ────────────────────────────────────────────
+    // Deaths
     for (const id of toRemove) {
       const e = this.entities.get(id);
       if (e) {
@@ -172,17 +143,16 @@ export class EntityManager {
       }
     }
 
-    // ── Births ────────────────────────────────────────────
+    // Births
     for (const s of toSpawn) {
-      const born = this.spawn(s.type, s.x, s.y, s.genes, s.tribeId);
+      const born = this.spawn(s.type, s.x, s.y, s.genes);
       if (born) {
         born.isChild  = true;
         born.parentId = s.parentId;
-        // Inherit settlement from parent
-        const parent = this.entities.get(s.parentId);
+        const parent  = this.entities.get(s.parentId);
         if (parent) {
-          born.settlementId            = parent.settlementId;
-          born.memory.homeSettlement   = parent.memory.homeSettlement;
+          born.settlementId          = parent.settlementId;
+          born.memory.homeSettlement = parent.memory.homeSettlement;
         }
         if (born.settlementId !== -1) {
           const settlement = this.settlements.getById(born.settlementId);
@@ -202,38 +172,31 @@ export class EntityManager {
     if (oldTile) oldTile.occupied = false;
 
     this.grid.move(entity.id, entity.x, entity.y, nx, ny);
-
     entity.x = nx;
     entity.y = ny;
     newTile.occupied = true;
-    entity.energy -= 0.0005;
+    entity.energy   -= 0.0005;
   }
 
   // ── Specialization ───────────────────────────────────────
 
-  /**
-   * Child type is determined by parent's stage, tribe prosperity, and genes.
-   * Specialization only unlocks when the appropriate mechanic is active.
-   */
   private specializeChild(parentType: EntityType, parent: EntityState): EntityType {
     if (parentType === 'hunter_gatherer') {
-      if (parent.tribeId !== -1 && parent.settlementId !== -1 && Math.random() < 0.3) return 'villager';
+      if (parent.settlementId !== -1 && Math.random() < 0.35) return 'villager';
     }
     if (parentType === 'villager') {
       const g = parent.genes;
       if (g.creativity > 0.55 && Math.random() < 0.12) return 'farmer';
-      if (g.strength > 0.55 && Math.random() < 0.12)   return 'craftsman';
-      if (g.strength > 0.65 && Math.random() < 0.08)   return 'warrior';
-      if (g.sociability > 0.65 && Math.random() < 0.06) return 'merchant';
-      if (g.intelligence > 0.65 && Math.random() < 0.05) return 'scholar';
+      if (g.strength   > 0.55 && Math.random() < 0.12) return 'craftsman';
+      if (g.strength   > 0.65 && Math.random() < 0.07) return 'warrior';
+      if (g.sociability > 0.65 && Math.random() < 0.05) return 'merchant';
+      if (g.intelligence > 0.65 && Math.random() < 0.04) return 'scholar';
     }
-    if (parentType === 'scholar' && parent.genes.ambition > 0.7 && Math.random() < 0.04) return 'noble';
     return parentType;
   }
 
   // ── Settlement assignment ────────────────────────────────
 
-  /** Assign entity to a settlement (called by Simulation on new settlement founding). */
   assignToSettlement(entity: EntityState, settlementId: number): void {
     entity.settlementId = settlementId;
     const s = this.settlements.getById(settlementId);
@@ -245,7 +208,6 @@ export class EntityManager {
 
   // ── Read API ─────────────────────────────────────────────
 
-  /** Zero-allocation iteration for the renderer. */
   forEachAlive(cb: (e: EntityState) => void): void {
     for (const id of this.aliveIds) {
       const e = this.entities.get(id);

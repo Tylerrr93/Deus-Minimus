@@ -1,161 +1,408 @@
 // ============================================================
 // SETTLEMENT MANAGER
-// Manages the hub network of civilization.
-// Settlements are physical locations where units live, deposit
-// food, craft goods, and from which they set out to work.
+// Settlements form dynamically when entities cluster.
+// Tracks shared inventory and manages building projects.
 // ============================================================
 
 import { World } from '../world/World';
 import { TILE_PASSABLE } from '../world/Tile';
+import { ENTITY, SETTLEMENT } from '../config/constants';
+import { EntityState } from './Entity';
 
-export type SettlementLevel = 1 | 2 | 3 | 4;
-export const SETTLEMENT_LEVEL_NAMES: Record<SettlementLevel, string> = {
-  1: 'Camp',
-  2: 'Village',
-  3: 'Town',
-  4: 'City',
+// ── Building Projects ─────────────────────────────────────────
+
+export type ProjectType = 'dirt_road' | 'rough_home';
+
+export interface BuildingProject {
+  id:           number;
+  settlementId: number;
+  type:         ProjectType;
+  /** Ordered list of world tiles this project spans */
+  tiles:        [number, number][];
+  /** Per-tile progress 0→1 */
+  progressPerTile: number[];
+  /** Overall progress 0→1 (mean of per-tile) */
+  progress:     number;
+  workerIds:    number[];
+  maxWorkers:   number;
+  complete:     boolean;
+}
+
+// ── Settlement ────────────────────────────────────────────────
+
+export type SettlementLevel = 1 | 2 | 3;
+
+export const LEVEL_NAMES: Record<SettlementLevel, string> = {
+  1: 'Campsite',
+  2: 'Hamlet',
+  3: 'Village',
 };
 
 export interface Settlement {
-  id: number;
-  name: string;
-  x: number;
-  y: number;
-  tribeId: number;
-  level: SettlementLevel;
-  population: number;
-  foodStorage: number;
+  id:           number;
+  name:         string;
+  x:            number;
+  y:            number;
+  level:        SettlementLevel;
+  population:   number;
+  foodStorage:  number;
   maxFoodStorage: number;
-  woodStorage: number;
+  woodStorage:  number;
   stoneStorage: number;
-  ironStorage: number;
-  age: number;          // ticks since founded
-  roads: number[];      // connected settlement IDs
-  techPoints: number;   // accumulated research
+  age:          number;
+  homesBuilt:   number;
+  roadsBuilt:   number;
+  projects:     BuildingProject[];
+  projectCooldown: number;
+  /** Set to true when level just changed, for notification */
+  justLeveledUp: boolean;
 }
 
-const SETTLEMENT_NAMES = [
-  'Ashenvale', 'Dunmark', 'Ironholt', 'Goldenfield', 'Westmere',
-  'Stonegate', 'Oakhaven', 'Dawnkeep', 'Thornwall', 'Brightwater',
-  'Crowspire', 'Emberveil', 'Greyhaven', 'Moorfield', 'Salthollow',
-  'Crestfall', 'Deepmoor', 'Frostpeak', 'Grimhold', 'Halloway',
-  'Ironwood', 'Jadepond', 'Kingsbluff', 'Lochdale', 'Mirepoint',
-  'Northfen', 'Oldstoke', 'Pinewood', 'Quarryham', 'Ravenmoor',
-  'Silverhill', 'Timberveil', 'Underholt', 'Verdant', 'Whitemarsh',
+// ── Name pool ─────────────────────────────────────────────────
+
+const NAMES = [
+  'Ashenvale','Dunmark','Ironholt','Goldenfield','Westmere',
+  'Stonegate','Oakhaven','Dawnkeep','Thornwall','Brightwater',
+  'Crowspire','Emberveil','Greyhaven','Moorfield','Salthollow',
+  'Crestfall','Deepmoor','Frostpeak','Grimhold','Halloway',
+  'Ironwood','Jadepond','Kingsbluff','Lochdale','Mirepoint',
+  'Northfen','Oldstoke','Pinewood','Quarryham','Ravenmoor',
 ];
 
-let _nameIdx = 0;
-let _nextSettlementId = 1;
+let _nameIdx       = 0;
+let _nextId        = 1;
+let _nextProjectId = 1;
 
-// Minimum tile-distance between any two settlements
-const MIN_SETTLEMENT_DISTANCE = 18;
-// How much food is consumed per population tick
-const FOOD_PER_POP_TICK = 0.002;
+// ── Manager ───────────────────────────────────────────────────
 
 export class SettlementManager {
   private settlements: Map<number, Settlement> = new Map();
 
   constructor(private readonly world: World) {}
 
-  /** Attempt to found a new settlement at (x,y). Returns null if position is invalid. */
-  found(x: number, y: number, tribeId: number): Settlement | null {
+  // ── Dynamic formation ─────────────────────────────────────
+
+  /**
+   * Scans unhoused entities for clusters large enough to form a settlement.
+   * Returns newly founded settlements (callers can push notifications).
+   */
+  checkForNewSettlements(entities: EntityState[]): Settlement[] {
+    const created: Settlement[] = [];
+
+    const unhoused = entities.filter(e => e.alive && !e.isChild && e.settlementId === -1);
+    if (unhoused.length < ENTITY.CLUSTER_MIN_SIZE) return created;
+
+    const assigned = new Set<number>();
+
+    for (const anchor of unhoused) {
+      if (assigned.has(anchor.id)) continue;
+
+      // Collect nearby unhoused entities
+      const cluster = unhoused.filter(e =>
+        !assigned.has(e.id) &&
+        Math.abs(e.x - anchor.x) + Math.abs(e.y - anchor.y) <= ENTITY.CLUSTER_RADIUS,
+      );
+
+      if (cluster.length < ENTITY.CLUSTER_MIN_SIZE) continue;
+
+      // Find centroid
+      const cx = Math.round(cluster.reduce((s, e) => s + e.x, 0) / cluster.length);
+      const cy = Math.round(cluster.reduce((s, e) => s + e.y, 0) / cluster.length);
+
+      // Enforce minimum distance between settlements
+      const tooClose = [...this.settlements.values()].some(s =>
+        Math.abs(s.x - cx) + Math.abs(s.y - cy) < SETTLEMENT.MIN_DISTANCE,
+      );
+      if (tooClose) continue;
+
+      const tile = this.world.findPassableTileNear(cx, cy, 6);
+      if (!tile) continue;
+
+      const s = this._create(tile.x, tile.y);
+      if (!s) continue;
+
+      // Assign up to 12 cluster members
+      for (const e of cluster.slice(0, 12)) {
+        e.settlementId            = s.id;
+        e.memory.homeSettlement   = [s.x, s.y];
+        s.population++;
+        assigned.add(e.id);
+      }
+
+      created.push(s);
+    }
+
+    return created;
+  }
+
+  private _create(x: number, y: number): Settlement | null {
     const tile = this.world.getTile(x, y);
     if (!tile || !TILE_PASSABLE[tile.type]) return null;
 
-    // Enforce minimum distance
     for (const s of this.settlements.values()) {
-      const dist = Math.abs(s.x - x) + Math.abs(s.y - y);
-      if (dist < MIN_SETTLEMENT_DISTANCE) return null;
+      if (Math.abs(s.x - x) + Math.abs(s.y - y) < SETTLEMENT.MIN_DISTANCE) return null;
     }
 
-    const settlement: Settlement = {
-      id: _nextSettlementId++,
-      name: SETTLEMENT_NAMES[_nameIdx++ % SETTLEMENT_NAMES.length],
+    const s: Settlement = {
+      id:   _nextId++,
+      name: NAMES[_nameIdx++ % NAMES.length],
       x, y,
-      tribeId,
       level: 1,
-      population: 0,
-      foodStorage: 8,
-      maxFoodStorage: 30,
-      woodStorage: 0,
-      stoneStorage: 0,
-      ironStorage: 0,
-      age: 0,
-      roads: [],
-      techPoints: 0,
+      population:     0,
+      foodStorage:    5,
+      maxFoodStorage: 20,
+      woodStorage:    0,
+      stoneStorage:   0,
+      age:            0,
+      homesBuilt:     0,
+      roadsBuilt:     0,
+      projects:       [],
+      projectCooldown: 0,
+      justLeveledUp:  false,
     };
 
-    this.settlements.set(settlement.id, settlement);
+    this.settlements.set(s.id, s);
 
-    // Mark the tile
     const t = this.world.getTile(x, y);
     if (t) t.improvement = 'settlement';
 
-    return settlement;
+    return s;
   }
 
-  tick(hasMechanic: (m: string) => boolean): void {
+  // ── Per-tick update ───────────────────────────────────────
+
+  tick(entities: EntityState[]): void {
     for (const s of this.settlements.values()) {
       s.age++;
+      s.justLeveledUp = false;
 
-      // Population-driven food consumption
-      const consumed = s.population * FOOD_PER_POP_TICK;
-      s.foodStorage = Math.max(0, s.foodStorage - consumed);
+      // Recount living adult population
+      s.population = entities.filter(e => e.alive && !e.isChild && e.settlementId === s.id).length;
 
-      // Level progression based on population
-      const newLevel = s.population >= 40 ? 4
-        : s.population >= 15 ? 3
-        : s.population >= 5  ? 2
-        : 1;
-      if (newLevel !== s.level) {
-        s.level = newLevel as SettlementLevel;
-        s.maxFoodStorage = 30 * s.level;
-        // Upgrade the tile visually on level-up
-        const t = this.world.getTile(s.x, s.y);
-        if (t) t.improvement = 'settlement';
+      // Consume food
+      s.foodStorage = Math.max(0, s.foodStorage - s.population * SETTLEMENT.FOOD_PER_POP_TICK);
+
+      // Level progression
+      this._checkLevelUp(s);
+
+      // Project generation & housekeeping
+      if (s.projectCooldown > 0) {
+        s.projectCooldown--;
+      } else {
+        this._generateProjects(s);
       }
 
-      // Road building: connect to nearest settlement once roads unlock
-      if (hasMechanic('roads') && s.level >= 2 && Math.random() < 0.0005) {
-        this.buildRoadToNearest(s);
-      }
-
-      // Scholars and scribes generate tech points
-      if (hasMechanic('writing')) {
-        s.techPoints += 0.005 * s.level;
+      // Evict dead workers from projects
+      for (const p of s.projects) {
+        if (!p.complete) {
+          p.workerIds = p.workerIds.filter(id => entities.find(e => e.id === id && e.alive));
+        }
       }
     }
   }
 
-  private buildRoadToNearest(s: Settlement): void {
-    let nearest: Settlement | null = null;
-    let nearestDist = Infinity;
-    for (const other of this.settlements.values()) {
-      if (other.id === s.id || s.roads.includes(other.id)) continue;
-      const dist = Math.abs(other.x - s.x) + Math.abs(other.y - s.y);
-      if (dist < nearestDist) { nearestDist = dist; nearest = other; }
+  private _checkLevelUp(s: Settlement): void {
+    const prev = s.level;
+    if (s.level === 1 &&
+        s.population    >= SETTLEMENT.LEVEL2_POP &&
+        s.foodStorage   >= SETTLEMENT.LEVEL2_FOOD) {
+      s.level          = 2;
+      s.maxFoodStorage = 40;
     }
-    if (!nearest || nearestDist > 80) return;
-
-    this.drawRoadLine(s.x, s.y, nearest.x, nearest.y);
-    s.roads.push(nearest.id);
-    nearest.roads.push(s.id);
+    if (s.level === 2 &&
+        s.population >= SETTLEMENT.LEVEL3_POP &&
+        s.homesBuilt >= SETTLEMENT.LEVEL3_HOMES) {
+      s.level          = 3;
+      s.maxFoodStorage = 80;
+    }
+    if (s.level !== prev) {
+      s.justLeveledUp = true;
+      const t = this.world.getTile(s.x, s.y);
+      if (t) t.improvement = 'settlement';
+    }
   }
 
-  /** Bresenham-style road between two settlements */
-  private drawRoadLine(x1: number, y1: number, x2: number, y2: number): void {
+  // ── Project generation ────────────────────────────────────
+
+  private _generateProjects(s: Settlement): void {
+    if (s.level < 2) return;
+
+    const active = s.projects.filter(p => !p.complete);
+    if (active.length >= SETTLEMENT.MAX_ACTIVE_PROJECTS) return;
+
+    const needHome = s.homesBuilt < Math.floor(s.population / 3) + 1;
+    const needRoad = s.roadsBuilt < 3 + (s.level - 1);
+
+    // Bias toward homes first, then roads
+    if (needHome && (Math.random() < 0.6 || !needRoad)) {
+      const p = this._createHomeProject(s);
+      if (p) { s.projects.push(p); s.projectCooldown = SETTLEMENT.PROJECT_COOLDOWN; }
+    } else if (needRoad) {
+      const p = this._createRoadProject(s);
+      if (p) { s.projects.push(p); s.projectCooldown = SETTLEMENT.PROJECT_COOLDOWN; }
+    }
+  }
+
+  private _createHomeProject(s: Settlement): BuildingProject | null {
+    const range = SETTLEMENT.HOME_SEARCH_RANGE;
+    for (let r = 2; r <= range; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+          const t = this.world.getTile(s.x + dx, s.y + dy);
+          if (!t || !TILE_PASSABLE[t.type] || t.improvement) continue;
+          // Don't conflict with an existing project tile
+          if (this._tileInUse(s.x + dx, s.y + dy)) continue;
+
+          return this._makeProject(s.id, 'rough_home', [[s.x + dx, s.y + dy]], 2);
+        }
+      }
+    }
+    return null;
+  }
+
+  private _createRoadProject(s: Settlement): BuildingProject | null {
+    const range = SETTLEMENT.ROAD_SEARCH_RANGE;
+    let bestTarget: [number, number] | null = null;
+    let bestScore = 0;
+
+    for (let dy = -range; dy <= range; dy++) {
+      for (let dx = -range; dx <= range; dx++) {
+        const dist = Math.abs(dx) + Math.abs(dy);
+        if (dist < 8) continue;
+        const t = this.world.getTile(s.x + dx, s.y + dy);
+        if (!t || !TILE_PASSABLE[t.type]) continue;
+        const food = t.resources.find(r => r.type === 'food');
+        if (!food || food.amount < 1.5) continue;
+        const score = food.amount / dist;
+        if (score > bestScore) { bestScore = score; bestTarget = [s.x + dx, s.y + dy]; }
+      }
+    }
+
+    if (!bestTarget) return null;
+
+    const path = this._bresenhamPath(s.x, s.y, bestTarget[0], bestTarget[1]);
+    const viable = path.filter(([tx, ty]) => {
+      const t = this.world.getTile(tx, ty);
+      return t && TILE_PASSABLE[t.type] &&
+             t.improvement !== 'dirt_road' &&
+             t.improvement !== 'settlement';
+    });
+
+    if (viable.length < 3) return null;
+
+    return this._makeProject(s.id, 'dirt_road', viable.slice(0, 20), 4);
+  }
+
+  private _makeProject(
+    settlementId: number,
+    type: ProjectType,
+    tiles: [number, number][],
+    maxWorkers: number,
+  ): BuildingProject {
+    return {
+      id: _nextProjectId++,
+      settlementId,
+      type,
+      tiles,
+      progressPerTile: tiles.map(() => 0),
+      progress: 0,
+      workerIds: [],
+      maxWorkers,
+      complete: false,
+    };
+  }
+
+  private _bresenhamPath(x1: number, y1: number, x2: number, y2: number): [number, number][] {
+    const path: [number, number][] = [];
     let x = x1, y = y1;
     let steps = 0;
-    while ((x !== x2 || y !== y2) && steps++ < 300) {
-      const dx = Math.sign(x2 - x);
-      const dy = Math.sign(y2 - y);
-      // Prefer horizontal movement to create more natural-looking roads
-      if (Math.abs(x2 - x) >= Math.abs(y2 - y)) x += dx;
-      else y += dy;
-      const tile = this.world.getTile(x, y);
-      if (tile && TILE_PASSABLE[tile.type] && tile.improvement !== 'settlement') {
-        tile.improvement = 'road';
+    const max = Math.abs(x2 - x1) + Math.abs(y2 - y1) + 2;
+    while ((x !== x2 || y !== y2) && steps++ < max) {
+      if (Math.abs(x2 - x) >= Math.abs(y2 - y)) x += Math.sign(x2 - x);
+      else                                        y += Math.sign(y2 - y);
+      path.push([x, y]);
+      if (path.length >= 25) break;
+    }
+    return path;
+  }
+
+  private _tileInUse(tx: number, ty: number): boolean {
+    for (const s of this.settlements.values()) {
+      for (const p of s.projects) {
+        if (!p.complete && p.tiles.some(([x, y]) => x === tx && y === ty)) return true;
       }
+    }
+    return false;
+  }
+
+  // ── Building project API ──────────────────────────────────
+
+  /** Returns a project that still needs workers from the given settlement. */
+  getAvailableProject(settlementId: number, entityId: number): BuildingProject | null {
+    const s = this.settlements.get(settlementId);
+    if (!s) return null;
+    for (const p of s.projects) {
+      if (p.complete) continue;
+      if (p.workerIds.includes(entityId)) return p;       // already assigned
+      if (p.workerIds.length < p.maxWorkers) return p;    // open slot
+    }
+    return null;
+  }
+
+  /** Returns the nearest incomplete tile in the project to the entity. */
+  getNearestProjectTile(project: BuildingProject, ex: number, ey: number): [number, number] | null {
+    let best: [number, number] | null = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < project.tiles.length; i++) {
+      if (project.progressPerTile[i] >= 1) continue;
+      const [tx, ty] = project.tiles[i];
+      const d = Math.abs(tx - ex) + Math.abs(ty - ey);
+      if (d < bestDist) { bestDist = d; best = [tx, ty]; }
+    }
+    return best;
+  }
+
+  /** Advance a specific project tile; complete the project when all tiles are done. */
+  advanceProject(
+    projectId: number,
+    tileX: number,
+    tileY: number,
+    entityId: number,
+    amount: number,
+  ): void {
+    for (const s of this.settlements.values()) {
+      const p = s.projects.find(pr => pr.id === projectId);
+      if (!p || p.complete) continue;
+
+      if (!p.workerIds.includes(entityId)) p.workerIds.push(entityId);
+
+      const idx = p.tiles.findIndex(([tx, ty]) => tx === tileX && ty === tileY);
+      if (idx !== -1) {
+        p.progressPerTile[idx] = Math.min(1, p.progressPerTile[idx] + amount);
+      }
+
+      const done = p.progressPerTile.filter(v => v >= 1).length;
+      p.progress = done / p.tiles.length;
+
+      if (p.progress >= 1) {
+        p.complete = true;
+        if (p.type === 'dirt_road') {
+          for (const [tx, ty] of p.tiles) {
+            const t = this.world.getTile(tx, ty);
+            if (t && TILE_PASSABLE[t.type] && t.improvement !== 'settlement') {
+              t.improvement = 'dirt_road';
+            }
+          }
+          s.roadsBuilt++;
+        } else if (p.type === 'rough_home') {
+          const [tx, ty] = p.tiles[0];
+          const t = this.world.getTile(tx, ty);
+          if (t) t.improvement = 'rough_home';
+          s.homesBuilt++;
+        }
+      }
+      return;
     }
   }
 
@@ -181,48 +428,29 @@ export class SettlementManager {
   depositResource(settlementId: number, type: 'wood' | 'stone' | 'iron', amount: number): void {
     const s = this.settlements.get(settlementId);
     if (!s) return;
-    s[`${type}Storage`] = Math.min(100, (s[`${type}Storage`] as number) + amount);
+    if (type === 'wood')  s.woodStorage  = Math.min(200, s.woodStorage  + amount);
+    if (type === 'stone') s.stoneStorage = Math.min(200, s.stoneStorage + amount);
   }
 
   // ── Queries ──────────────────────────────────────────────
 
-  getAll(): Settlement[] {
-    return [...this.settlements.values()];
-  }
+  getAll(): Settlement[]                        { return [...this.settlements.values()]; }
+  getById(id: number): Settlement | null        { return this.settlements.get(id) ?? null; }
+  getCount(): number                            { return this.settlements.size; }
 
-  getById(id: number): Settlement | null {
-    return this.settlements.get(id) ?? null;
-  }
-
-  getCount(): number {
-    return this.settlements.size;
-  }
-
-  getNearestTo(x: number, y: number, tribeId: number = -1): Settlement | null {
-    let nearest: Settlement | null = null;
-    let nearestDist = Infinity;
-    for (const s of this.settlements.values()) {
-      if (tribeId !== -1 && s.tribeId !== tribeId) continue;
-      const dist = Math.abs(s.x - x) + Math.abs(s.y - y);
-      if (dist < nearestDist) { nearestDist = dist; nearest = s; }
-    }
-    return nearest;
-  }
-
-  getTotalTechPoints(): number {
-    let total = 0;
-    for (const s of this.settlements.values()) total += s.techPoints;
-    return total;
+  getAllProjects(): BuildingProject[] {
+    const out: BuildingProject[] = [];
+    for (const s of this.settlements.values()) out.push(...s.projects);
+    return out;
   }
 
   getLevelDistribution(): Record<string, number> {
-    const dist: Record<string, number> = { camp: 0, village: 0, town: 0, city: 0 };
+    const d = { campsite: 0, hamlet: 0, village: 0 };
     for (const s of this.settlements.values()) {
-      if (s.level === 1) dist.camp++;
-      else if (s.level === 2) dist.village++;
-      else if (s.level === 3) dist.town++;
-      else dist.city++;
+      if      (s.level === 1) d.campsite++;
+      else if (s.level === 2) d.hamlet++;
+      else                    d.village++;
     }
-    return dist;
+    return d;
   }
 }

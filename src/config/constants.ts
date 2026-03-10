@@ -1,5 +1,5 @@
 // ============================================================
-// GAME CONSTANTS — edit freely to tune simulation feel
+// GAME CONSTANTS
 // ============================================================
 
 export const CANVAS = {
@@ -22,26 +22,46 @@ export const WORLD = {
 };
 
 export const SIM = {
-  BASE_TICK_MS:    500,  // ms per sim tick — slow enough to observe events
-  TICKS_PER_YEAR:  120,  // years advance at this cadence (100 ticks = ~25s real time)
-};
-
-export const GOD = {
-  INITIAL_FAVOR:      100,
-  MAX_FAVOR:          300,
-  FAVOR_REGEN_PER_TICK: 0.05,
+  BASE_TICK_MS:    500,
+  TICKS_PER_YEAR:  120,
+  /** How often (in ticks) to run cluster detection for new settlements */
+  CLUSTER_CHECK_INTERVAL: 20,
 };
 
 export const ENTITY = {
-  MAX_AGE_VARIANCE:        0.3,
-  HUNGER_RATE:             0.0008,   // slow drain — entities stay fed comfortably
-  MOVE_ENERGY_COST:        0.0002,   // cheap movement
-  REPRO_ENERGY_THRESHOLD:  0.55,     // achievable even when not perfectly topped off
-  REPRO_COOLDOWN_TICKS:    120,       // several births possible per lifespan
-  VISION_RANGE:            10,       // used for neighbour query radius
+  HUNGER_RATE:             0.0008,
+  REPRO_ENERGY_THRESHOLD:  0.55,
+  REPRO_COOLDOWN_TICKS:    120,
+  VISION_RANGE:            10,
   MUTATION_RATE:           0.04,
   CARRY_CAPACITY:          3.0,
-  TRIBE_BOND_RADIUS:       10,
-  SETTLEMENT_FOUND_RADIUS: 5,
-  SPECIALIZE_AGE:          10,       // adulthood comes quickly
+  SPECIALIZE_AGE:          10,
+  /** Radius in tiles for detecting a cluster */
+  CLUSTER_RADIUS:          8,
+  /** Minimum entities in proximity to form a settlement */
+  CLUSTER_MIN_SIZE:        5,
+};
+
+export const SETTLEMENT = {
+  /** Minimum taxi-distance between any two settlement centres */
+  MIN_DISTANCE: 18,
+  /** Population needed for level 1 → 2 (Campsite → Hamlet) */
+  LEVEL2_POP:   8,
+  /** Shared food stock needed alongside population for level-up */
+  LEVEL2_FOOD:  12,
+  /** Population + homes needed for level 2 → 3 (Hamlet → Village) */
+  LEVEL3_POP:   16,
+  LEVEL3_HOMES: 3,
+  /** Max simultaneous active building projects per settlement */
+  MAX_ACTIVE_PROJECTS: 3,
+  /** Fractional progress added per worker per tick */
+  BUILD_RATE: 0.010,
+  /** Tiles to search when targeting a road endpoint */
+  ROAD_SEARCH_RANGE: 22,
+  /** Tiles to search for a home site */
+  HOME_SEARCH_RANGE: 6,
+  /** Cooldown ticks between spawning new projects */
+  PROJECT_COOLDOWN: 40,
+  /** Food consumed per population member per tick */
+  FOOD_PER_POP_TICK: 0.002,
 };

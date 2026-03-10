@@ -23,9 +23,9 @@ export interface Tile {
   moisture: number;
   resources: TileResource[];
   occupied: boolean;
-  pollution: number;       // 0–1, grows in industrial age
-  claimed: number;         // entity/tribe ID that claims this (-1 = unclaimed)
-  improvement?: 'farm' | 'mine' | 'settlement' | 'road' | 'castle' | 'factory';
+  pollution: number;
+  claimed: number;
+  improvement?: 'farm' | 'mine' | 'settlement' | 'dirt_road' | 'rough_home';
 }
 
 export const TILE_COLORS: Record<TileType, string> = {

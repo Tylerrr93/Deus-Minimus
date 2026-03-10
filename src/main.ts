@@ -1,5 +1,5 @@
 // ============================================================
-// MAIN — boots the game and wires the main loop.
+// MAIN — boots the game and wires the loop
 // ============================================================
 
 import { Simulation } from './simulation/Simulation';
@@ -10,36 +10,32 @@ import { SIM, CANVAS, WORLD } from './config/constants';
 import { EntityState } from './entities/Entity';
 
 class Game {
-  private sim: Simulation;
+  private sim:      Simulation;
   private renderer: Renderer;
-  private ui: UIManager;
-  private input: InputHandler;
-  private camera: Camera;
+  private ui:       UIManager;
+  private input:    InputHandler;
+  private camera:   Camera;
 
   private isPaused = false;
-  private speed = 1;
+  private speed    = 1;
   private lastTickTime = 0;
-  private accumulator = 0;
+  private accumulator  = 0;
 
-  private selectedTile: { x: number; y: number } | null = null;
+  private selectedTile:   { x: number; y: number } | null = null;
   private selectedEntity: EntityState | null = null;
   private showPartnerLines = false;
   private showFriendLines  = false;
 
   constructor() {
-    const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
-    canvas.width  = CANVAS.WIDTH;
-    canvas.height = CANVAS.HEIGHT;
+    const canvas    = document.getElementById('game-canvas') as HTMLCanvasElement;
+    canvas.width    = CANVAS.WIDTH;
+    canvas.height   = CANVAS.HEIGHT;
 
-    this.sim = new Simulation();
+    this.sim    = new Simulation();
     this.camera = { x: 100, y: 50, zoom: 1.2 };
 
     this.renderer = new Renderer(
-      canvas,
-      this.sim.world,
-      this.sim.entities,
-      this.sim.stages,
-      this.sim.settlements,
+      canvas, this.sim.world, this.sim.entities, this.sim.settlements,
     );
     this.ui    = new UIManager();
     this.input = new InputHandler(canvas, this.camera);
@@ -56,14 +52,14 @@ class Game {
   }
 
   private bindEvents(): void {
-    this.sim.onStageTransition = (_prev, next) => {
-      this.ui.pushNotification(`✦ Era of ${next.name} begins`, 'major');
-      document.body.style.setProperty('--stage-tint', next.bgTint);
+    this.sim.onSettlementFounded = (s) => {
+      this.ui.pushNotification(`⛺ ${s.name} — a new settlement forms!`, 'moderate');
       this.renderer.markTilesDirty();
     };
 
-    this.sim.onEvent = (ev) => {
-      this.ui.pushNotification(`◉ ${ev.event.name}: ${ev.message}`, ev.event.severity);
+    this.sim.onSettlementLevelUp = (s) => {
+      const names = ['', 'Campsite', 'Hamlet', 'Village'];
+      this.ui.pushNotification(`✦ ${s.name} grows into a ${names[s.level]}!`, 'major');
       this.renderer.markTilesDirty();
     };
 
@@ -72,8 +68,8 @@ class Game {
 
     this.input.onEntityClick = (entity) => {
       if (this.selectedEntity?.id === entity.id) {
-        this.selectedEntity = null;
-        this.selectedTile   = null;
+        this.selectedEntity   = null;
+        this.selectedTile     = null;
         this.showPartnerLines = false;
         this.showFriendLines  = false;
         this.ui.clearInfoPanel();
@@ -89,11 +85,11 @@ class Game {
         this.selectedTile = null;
         this.ui.clearInfoPanel();
       } else {
-        this.selectedTile    = tile;
-        this.selectedEntity  = null;
+        this.selectedTile   = tile;
+        this.selectedEntity = null;
         const tileData = this.sim.world.getTile(tile.x, tile.y);
         if (tileData) this.ui.updateInfoPanelTile(tileData);
-        else this.ui.clearInfoPanel();
+        else          this.ui.clearInfoPanel();
       }
     };
   }
@@ -101,8 +97,7 @@ class Game {
   private bindControls(): void {
     document.getElementById('btn-pause')?.addEventListener('click', () => {
       this.isPaused = !this.isPaused;
-      const btn = document.getElementById('btn-pause')!;
-      btn.textContent = this.isPaused ? '▶ Resume' : '⏸ Pause';
+      document.getElementById('btn-pause')!.textContent = this.isPaused ? '▶ Resume' : '⏸ Pause';
     });
 
     document.getElementById('btn-speed')?.addEventListener('click', () => {
@@ -115,10 +110,7 @@ class Game {
         this.sim = new Simulation(Math.random());
         this.renderer = new Renderer(
           document.getElementById('game-canvas') as HTMLCanvasElement,
-          this.sim.world,
-          this.sim.entities,
-          this.sim.stages,
-          this.sim.settlements,
+          this.sim.world, this.sim.entities, this.sim.settlements,
         );
         this.input.setEntityManager(this.sim.entities);
         this.selectedEntity   = null;
@@ -147,6 +139,7 @@ class Game {
       }
     }
 
+    // Refresh selected entity info periodically
     if (this.selectedEntity) {
       let fresh: EntityState | null = null;
       this.sim.entities.forEachAlive(e => {
@@ -178,6 +171,4 @@ class Game {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  new Game();
-});
+window.addEventListener('DOMContentLoaded', () => { new Game(); });
