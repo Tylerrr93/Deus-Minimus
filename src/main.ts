@@ -81,15 +81,28 @@ class Game {
     };
 
     this.input.onTileClick = (tile) => {
+      // Deselect if clicking same tile again
       if (this.selectedTile?.x === tile.x && this.selectedTile?.y === tile.y) {
         this.selectedTile = null;
-        this.ui.clearInfoPanel();
-      } else {
-        this.selectedTile   = tile;
         this.selectedEntity = null;
-        const tileData = this.sim.world.getTile(tile.x, tile.y);
-        if (tileData) this.ui.updateInfoPanelTile(tileData);
-        else          this.ui.clearInfoPanel();
+        this.ui.clearInfoPanel();
+        return;
+      }
+
+      this.selectedEntity = null;
+      this.selectedTile   = tile;
+
+      const tileData = this.sim.world.getTile(tile.x, tile.y);
+      if (!tileData) { this.ui.clearInfoPanel(); return; }
+
+      // Check if this tile is a settlement centre
+      const settlement = this.sim.settlements.getAll().find(
+        s => s.x === tile.x && s.y === tile.y,
+      );
+      if (settlement) {
+        this.ui.updateInfoPanelSettlement(settlement);
+      } else {
+        this.ui.updateInfoPanelTile(tileData);
       }
     };
   }
@@ -153,6 +166,21 @@ class Game {
       } else {
         this.selectedEntity = null;
         this.ui.clearInfoPanel();
+      }
+    }
+
+    // Refresh selected settlement info periodically
+    if (this.selectedTile && !this.selectedEntity) {
+      if (Math.floor(timestamp / 16) % 20 === 0) {
+        const tileData = this.sim.world.getTile(this.selectedTile.x, this.selectedTile.y);
+        if (tileData) {
+          const settlement = this.sim.settlements.getAll().find(
+            s => s.x === this.selectedTile!.x && s.y === this.selectedTile!.y,
+          );
+          if (settlement) {
+            this.ui.updateInfoPanelSettlement(settlement);
+          }
+        }
       }
     }
 

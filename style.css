@@ -241,44 +241,523 @@ body {
 }
 #btn-help:hover { border-color: var(--accent); color: var(--accent-glow); }
 
-/* ── Info Panel ── */
+
+/* ============================================================
+   INFO PANEL — tabbed inspector
+   Floats at the bottom-centre, above the map.
+   pointer-events: auto on the panel itself so clicks are captured;
+   the canvas stays fully interactive outside the panel.
+   ============================================================ */
+
 #info-panel {
-  position: absolute; bottom: 12px; left: 50%;
-  width: 320px;
-  background: rgba(10,10,20,0.92);
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 380px;
+  max-height: 380px;
+
+  background: rgba(8, 8, 18, 0.96);
   border: 1px solid var(--panel-border);
   border-top: 2px solid var(--accent);
-  padding: 10px 12px;
-  font-family: var(--font-mono); font-size: 10px; color: var(--text);
-  pointer-events: none; backdrop-filter: blur(4px);
-  box-shadow: 0 -4px 24px rgba(136,85,255,0.15);
-  display: none; transform: translateX(-50%);
-}
-#info-panel.active { display: block; }
-.info-header { display:flex; align-items:center; gap:6px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--panel-border); }
-.info-type-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-.info-icon { font-size:13px; }
-.info-title { font-family:var(--font-serif); font-size:11px; letter-spacing:0.1em; color:var(--accent-glow); flex:1; }
-.info-id { color:var(--text-dim); font-size:9px; }
-.info-grid { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; }
-.info-row { display:flex; justify-content:space-between; align-items:center; padding:1px 0; }
-.info-label { color:var(--text-dim); text-transform:uppercase; font-size:9px; letter-spacing:0.05em; }
-.info-val { color:var(--text); font-size:10px; text-align:right; }
-.info-divider { height:1px; background:var(--panel-border); margin:7px 0; }
-.info-genes { display:flex; flex-direction:column; gap:2px; }
-.info-genes-title { font-family:var(--font-serif); font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-dim); margin-bottom:3px; }
-.gene-row { display:flex; align-items:center; gap:5px; }
-.gene-name { width:28px; color:var(--text-dim); font-size:9px; text-transform:capitalize; flex-shrink:0; }
-.gene-bar-wrap { flex:1; height:4px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
-.gene-bar { height:100%; border-radius:2px; }
-.gene-val { width:24px; text-align:right; color:var(--text-dim); font-size:9px; }
+  border-radius: 0 0 5px 5px;
 
-/* ── Social toggles ── */
-.info-social-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
-.info-social-toggles { display:flex; gap:4px; }
-.info-social-toggles button {
-  font-size:9px; padding:2px 5px; border-radius:3px;
-  border:1px solid #443344; cursor:pointer;
-  transition:background 0.15s, border-color 0.15s; font-family:inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+
+  /* Clicks on the panel must NOT pass through to canvas */
+  pointer-events: auto;
+  z-index: 30;
+
+  backdrop-filter: blur(6px);
+  box-shadow: 0 -4px 32px rgba(136,85,255,0.18), 0 8px 24px rgba(0,0,0,0.6);
+
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
 }
-.info-social-toggles button:hover { filter:brightness(1.3); }
+
+#info-panel.active {
+  display: flex;
+}
+
+/* ── Panel header ── */
+
+.ip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 7px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+
+.ip-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ip-role-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ip-settle-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.ip-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ip-title {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--accent-glow);
+  line-height: 1.2;
+}
+
+.ip-subtitle {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.ip-close {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.ip-close:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ── Tabs ── */
+
+.ip-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
+  background: rgba(0,0,0,0.2);
+}
+
+.ip-tab {
+  flex: 1;
+  padding: 5px 4px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.ip-tab:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
+}
+
+.ip-tab.active {
+  color: var(--accent-glow);
+  border-bottom-color: var(--accent);
+  background: rgba(136,85,255,0.08);
+}
+
+/* ── Tab content ── */
+
+.ip-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-border) transparent;
+}
+
+.ip-tab-content {
+  display: none;
+  padding: 8px 12px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ip-tab-content.active {
+  display: flex;
+}
+
+/* ── Settlement body (no tabs) ── */
+
+.ip-settle-body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-border) transparent;
+}
+
+/* ── Shared row styles ── */
+
+.ip-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+  min-height: 18px;
+}
+
+.ip-stat-row.bar-row {
+  align-items: center;
+}
+
+.ip-stat-label {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  min-width: 72px;
+}
+
+.ip-stat-val {
+  color: var(--text);
+  font-size: 10px;
+  text-align: right;
+}
+
+.ip-stat-val.task-val {
+  color: #88ddff;
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.ip-stat-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.stat-bar-bg {
+  flex: 1;
+  height: 4px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.stat-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.ip-stat-val.bar-num {
+  font-size: 9px;
+  min-width: 40px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ip-divider {
+  height: 1px;
+  background: rgba(255,255,255,0.07);
+  margin: 5px 0;
+}
+
+.ip-stat-empty {
+  color: var(--text-dim);
+  font-size: 9px;
+  font-style: italic;
+}
+
+/* ── Skills ── */
+
+.skill-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+}
+
+.skill-row.top-skill .skill-name {
+  color: var(--gold);
+}
+
+.skill-icon {
+  font-size: 10px;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.skill-name {
+  width: 58px;
+  color: var(--text-dim);
+  font-size: 9px;
+  text-transform: capitalize;
+  flex-shrink: 0;
+}
+
+.skill-bar-bg {
+  flex: 1;
+  height: 5px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.skill-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.skill-val {
+  width: 22px;
+  font-size: 9px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ip-badge {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  margin-bottom: 6px;
+  align-self: flex-start;
+}
+
+/* ── Genes ── */
+
+.gene-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 3px;
+  padding: 5px 7px;
+  margin-bottom: 3px;
+}
+
+.gene-card-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.gene-card-icon {
+  font-size: 10px;
+  width: 14px;
+  text-align: center;
+}
+
+.gene-card-name {
+  flex: 1;
+  font-size: 10px;
+  color: var(--text);
+}
+
+.gene-card-val {
+  font-size: 11px;
+  font-weight: bold;
+  min-width: 28px;
+  text-align: right;
+}
+
+.gene-card-bar-bg {
+  height: 3px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.gene-card-bar {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.gene-card-desc {
+  font-size: 8px;
+  color: var(--text-dim);
+  line-height: 1.3;
+}
+
+/* ── Social tab ── */
+
+.ip-social-toggles {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.ip-social-toggles button {
+  flex: 1;
+  font-size: 9px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: filter 0.15s;
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+}
+
+.ip-social-toggles button:hover {
+  filter: brightness(1.25);
+}
+
+.ip-chip-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 0;
+  min-height: 18px;
+}
+
+.ip-chip-row .ip-stat-label {
+  padding-top: 2px;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.id-chip {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+
+.id-chip.partner {
+  border-color: #cc4466;
+  color: #ff88aa;
+  background: rgba(204,68,102,0.12);
+}
+
+.id-chip.affair {
+  border-color: #cc7722;
+  color: #ffaa44;
+  background: rgba(204,119,34,0.12);
+}
+
+.id-chip.friend {
+  border-color: #224466;
+  color: #4488cc;
+  background: rgba(34,68,102,0.12);
+}
+
+/* ── Settlement panel specifics ── */
+
+.settle-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.settle-stat {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  padding: 5px 4px;
+  text-align: center;
+}
+
+.settle-stat-val {
+  display: block;
+  font-family: var(--font-serif);
+  font-size: 14px;
+  color: var(--gold);
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.settle-stat-label {
+  display: block;
+  font-size: 8px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.settle-section-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+}
+
+.project-icon { font-size: 10px; flex-shrink: 0; }
+.project-name {
+  font-size: 9px;
+  color: var(--text);
+  text-transform: capitalize;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.project-pct {
+  font-size: 9px;
+  color: var(--text-dim);
+  min-width: 26px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.project-workers {
+  font-size: 9px;
+  color: var(--text-dim);
+  min-width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.settle-coords {
+  font-size: 9px;
+  color: var(--text-dim);
+  text-align: right;
+}
+
+/* ── Flavour text (improvements) ── */
+
+.ip-flavour {
+  font-size: 9px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  font-style: italic;
+  padding: 4px 0;
+}
