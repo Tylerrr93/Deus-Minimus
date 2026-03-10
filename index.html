@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deus Minimus — A God Game</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="stage-bar-container">
+      <div id="stage-bar"></div>
+    </div>
+    <div id="canvas-wrapper">
+      <canvas id="game-canvas"></canvas>
+      <div id="notifications"></div>
+    </div>
+    <div id="sidebar" class="panel left-panel">
+      <div id="title-block">
+        <h1 class="game-title">DEUS<br>MINIMUS</h1>
+        <p class="game-subtitle">a god of little consequence</p>
+      </div>
+      <div id="hud"></div>
+      <div id="pop-chart"></div>
+      <div id="controls">
+        <div class="panel-title">Simulation</div>
+        <div class="control-row">
+          <button id="btn-pause" class="ctrl-btn">&#x23F8; Pause</button>
+          <button id="btn-speed" class="ctrl-btn">&#x23E9; 1x</button>
+        </div>
+        <div class="control-row">
+          <button id="btn-new-world" class="ctrl-btn danger">&#x21BA; New World</button>
+        </div>
+      </div>
+      <div id="power-panel"></div>
+    </div>
+    <div id="event-log" class="panel right-panel"></div>
+    <div id="help-overlay">
+      <div class="help-box">
+        <h2>Deus Minimus</h2>
+        <p>You are a <em>god of little consequence.</em> Your people don't know you exist.</p>
+        <p><b>Right-click drag</b> or <b>WASD</b> to pan the world.</p>
+        <p><b>Scroll wheel</b> to zoom in and out.</p>
+        <p><b>Select a Divine Power</b> then <b>left-click the map</b> to use it.</p>
+        <p>Hunter-gatherers begin scattered across the land. They will form tribes, found settlements, and develop civilizations — or collapse trying.</p>
+        <p>Your influence is limited. Favor regenerates slowly. Spend it wisely.</p>
+        <hr/>
+        <p class="help-tip">⬡ Settlements are founded automatically when tribes grow large enough.<br>
+           ⬡ God powers focused on <em>inspiration</em> and <em>discovery</em> scale better than pure destruction.<br>
+           ⬡ Every run generates a unique world and unique civilization path.</p>
+        <button onclick="document.getElementById('help-overlay').classList.add('hidden')">Begin</button>
+      </div>
+    </div>
+    <button id="btn-help" onclick="document.getElementById('help-overlay').classList.remove('hidden')">?</button>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
