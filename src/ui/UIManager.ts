@@ -1,7 +1,13 @@
 // ============================================================
 // UI MANAGER — DOM panel updates
-// Tabbed info panel for entities (Overview / Social / Skills / Genes)
-// and structures (settlements, roads, improvements).
+//
+// KEY DESIGN: The entity info panel is split into two operations:
+//   _buildEntityPanel()   — full HTML rebuild (tab switch / new entity)
+//   _patchEntityPanel()   — targeted value-only DOM updates (tick loop)
+//
+// This prevents the hover-flash bug caused by innerHTML replacement
+// destroying button elements mid-hover on every refresh cycle.
+// Social toggle buttons update only their className, never innerHTML.
 // ============================================================
 
 import { SimulationState } from '../simulation/Simulation';
@@ -12,7 +18,6 @@ import { SettlementManager, Settlement, LEVEL_NAMES } from '../entities/Settleme
 let _notifId = 0;
 interface Notification { id: number; message: string; severity: string; opacity: number; age: number; }
 
-// Which tab is active on the entity panel
 type EntityTab = 'overview' | 'social' | 'skills' | 'genes';
 
 export class UIManager {
@@ -23,8 +28,9 @@ export class UIManager {
   private infoPanel:      HTMLElement;
   private notifications:  Notification[] = [];
 
-  // Remember active tab across refreshes
-  private _entityTab: EntityTab = 'overview';
+  private _entityTab:    EntityTab = 'overview';
+  private _panelMode:    'entity' | 'settlement' | 'tile' | 'none' = 'none';
+  private _lastEntityId: number = -1;
 
   onTogglePartnerLines?: (v: boolean) => void;
   onToggleFriendLines?:  (v: boolean) => void;
@@ -39,10 +45,14 @@ export class UIManager {
     this.popChart       = document.getElementById('pop-chart')!;
     this.infoPanel      = document.getElementById('info-panel')!;
 
-    // Block pointer events from reaching the canvas through the panel
+    // Block all pointer events from passing through panel to canvas
     this.infoPanel.addEventListener('pointerdown', e => e.stopPropagation());
+    this.infoPanel.addEventListener('pointerup',   e => e.stopPropagation());
     this.infoPanel.addEventListener('click',       e => e.stopPropagation());
+    this.infoPanel.addEventListener('wheel',       e => e.stopPropagation());
   }
+
+  // ── Simulation HUD ────────────────────────────────────────
 
   update(state: SimulationState): void {
     this.updateHUD(state);
@@ -55,14 +65,12 @@ export class UIManager {
     const dist  = state.typeDistribution;
     const total = Math.max(1, Object.values(dist).reduce((a, b) => a + b, 0));
     const typeColors: Record<string, string> = {
-      wanderer:  '#ffcc44', hunter:   '#ff8833',
-      gatherer:  '#88dd66', farmer:   '#44cc88',
-      builder:   '#cc8844', crafter:  '#dd6633',
-      warrior:   '#ff4444', merchant: '#aa88ff',
-      scholar:   '#44ddff', elder:    '#ffaa22',
+      wanderer:  '#ffcc44', hunter:   '#ff8833', gatherer:  '#88dd66',
+      farmer:    '#44cc88', builder:  '#cc8844', crafter:   '#dd6633',
+      warrior:   '#ff4444', merchant: '#aa88ff', scholar:   '#44ddff', elder: '#ffaa22',
     };
     const typeBar = Object.entries(dist).map(([type, count]) => {
-      const pct = (count / total * 100).toFixed(1);
+      const pct   = (count / total * 100).toFixed(1);
       const color = typeColors[type] ?? '#888';
       return `<div class="type-seg" style="width:${pct}%;background:${color}" title="${type}: ${count}"></div>`;
     }).join('');
@@ -70,7 +78,7 @@ export class UIManager {
     const sl = state.settlementLevels;
     const settlSummary = [
       sl.campsite ? `<span class="hud-stype campsite">${sl.campsite} Campsites</span>` : '',
-      sl.hamlet   ? `<span class="hud-stype hamlet">${sl.hamlet} Hamlets</span>` : '',
+      sl.hamlet   ? `<span class="hud-stype hamlet">${sl.hamlet} Hamlets</span>`   : '',
       sl.village  ? `<span class="hud-stype village">${sl.village} Villages</span>` : '',
     ].filter(Boolean).join(' ');
 
@@ -98,18 +106,15 @@ export class UIManager {
   private updatePopChart(state: SimulationState): void {
     const dist = state.typeDistribution;
     const typeColors: Record<string, string> = {
-      wanderer:  '#ffcc44', hunter:   '#ff8833',
-      gatherer:  '#88dd66', farmer:   '#44cc88',
-      builder:   '#cc8844', crafter:  '#dd6633',
-      warrior:   '#ff4444', merchant: '#aa88ff',
-      scholar:   '#44ddff', elder:    '#ffaa22',
+      wanderer:  '#ffcc44', hunter:   '#ff8833', gatherer:  '#88dd66',
+      farmer:    '#44cc88', builder:  '#cc8844', crafter:   '#dd6633',
+      warrior:   '#ff4444', merchant: '#aa88ff', scholar:   '#44ddff', elder: '#ffaa22',
     };
     const rows = Object.entries(dist).sort((a, b) => b[1] - a[1]).map(([type, count]) => {
       const color = typeColors[type] ?? '#888';
-      const label = type.replace(/_/g, ' ');
       return `<div class="chart-row">
         <span class="chart-dot" style="background:${color}"></span>
-        <span class="chart-label">${label}</span>
+        <span class="chart-label">${type.replace(/_/g, ' ')}</span>
         <span class="chart-count">${count}</span>
       </div>`;
     }).join('');
@@ -131,49 +136,53 @@ export class UIManager {
     this.notifications.push({ id: _notifId++, message, severity, opacity: 1, age: 0 });
   }
 
-  // ── Entity info panel ─────────────────────────────────────
+  // ── Entity panel public API ───────────────────────────────
 
   updateInfoPanelEntity(entity: EntityState, settlements: SettlementManager): void {
+    const needsFullBuild =
+      this._panelMode !== 'entity' ||
+      this._lastEntityId !== entity.id;
+
+    if (needsFullBuild) {
+      this._buildEntityPanel(entity, settlements);
+    } else {
+      this._patchEntityPanel(entity, settlements);
+    }
+  }
+
+  // ── Full panel rebuild ────────────────────────────────────
+
+  private _buildEntityPanel(entity: EntityState, settlements: SettlementManager): void {
+    this._panelMode    = 'entity';
+    this._lastEntityId = entity.id;
+
     const roleColors: Record<string, string> = {
-      wanderer:  '#ffcc44', hunter:   '#ff8833',
-      gatherer:  '#88dd66', farmer:   '#44cc88',
-      builder:   '#cc8844', crafter:  '#dd6633',
-      warrior:   '#ff4444', merchant: '#aa88ff',
-      scholar:   '#44ddff', elder:    '#ffaa22',
+      wanderer:  '#ffcc44', hunter:   '#ff8833', gatherer:  '#88dd66',
+      farmer:    '#44cc88', builder:  '#cc8844', crafter:   '#dd6633',
+      warrior:   '#ff4444', merchant: '#aa88ff', scholar:   '#44ddff', elder: '#ffaa22',
     };
 
-    const color = roleColors[entity.type] ?? '#ffffff';
-    const label = entity.isChild ? 'Child' : entity.type.charAt(0).toUpperCase() + entity.type.slice(1);
-    const s     = entity.social;
-    const settl = entity.settlementId >= 0 ? settlements.getById(entity.settlementId) : null;
-
-    // ── Build each tab ──────────────────────────────────────
-
-    const tabOverview  = this._buildOverviewTab(entity, settl, color);
-    const tabSocial    = this._buildSocialTab(entity);
-    const tabSkills    = this._buildSkillsTab(entity);
-    const tabGenes     = this._buildGenesTab(entity);
+    const color      = roleColors[entity.type] ?? '#ffffff';
+    const label      = entity.isChild ? 'Child' : entity.type.charAt(0).toUpperCase() + entity.type.slice(1);
+    const s          = entity.social;
+    const settl      = entity.settlementId >= 0 ? settlements.getById(entity.settlementId) : null;
+    const genderIcon = s.gender === 'male' ? '♂' : '♀';
 
     const tabs: EntityTab[] = ['overview', 'social', 'skills', 'genes'];
     const tabLabels: Record<EntityTab, string> = {
-      overview: '⚑ Overview',
-      social:   '❤ Social',
-      skills:   '◈ Skills',
-      genes:    '⬡ Genes',
+      overview: '⚑ Overview', social: '❤ Social', skills: '◈ Skills', genes: '⬡ Genes',
     };
 
-    const tabsHtml = tabs.map(t => `
-      <button class="ip-tab ${this._entityTab === t ? 'active' : ''}" data-tab="${t}">${tabLabels[t]}</button>
-    `).join('');
+    const tabsHtml = tabs.map(t =>
+      `<button class="ip-tab${this._entityTab === t ? ' active' : ''}" data-tab="${t}">${tabLabels[t]}</button>`
+    ).join('');
 
     const contentsHtml = `
-      <div class="ip-tab-content ${this._entityTab === 'overview' ? 'active' : ''}" data-content="overview">${tabOverview}</div>
-      <div class="ip-tab-content ${this._entityTab === 'social'   ? 'active' : ''}" data-content="social">${tabSocial}</div>
-      <div class="ip-tab-content ${this._entityTab === 'skills'   ? 'active' : ''}" data-content="skills">${tabSkills}</div>
-      <div class="ip-tab-content ${this._entityTab === 'genes'    ? 'active' : ''}" data-content="genes">${tabGenes}</div>
+      <div class="ip-tab-content${this._entityTab === 'overview' ? ' active' : ''}" data-content="overview">${this._buildOverviewTab(entity, settl)}</div>
+      <div class="ip-tab-content${this._entityTab === 'social'   ? ' active' : ''}" data-content="social">${this._buildSocialTab(entity)}</div>
+      <div class="ip-tab-content${this._entityTab === 'skills'   ? ' active' : ''}" data-content="skills">${this._buildSkillsTab(entity)}</div>
+      <div class="ip-tab-content${this._entityTab === 'genes'    ? ' active' : ''}" data-content="genes">${this._buildGenesTab(entity)}</div>
     `;
-
-    const genderIcon  = s.gender === 'male' ? '♂' : '♀';
 
     this.infoPanel.innerHTML = `
       <div class="ip-header entity-header">
@@ -194,28 +203,94 @@ export class UIManager {
     this._bindEntityPanelEvents(entity, settlements);
   }
 
-  private _buildOverviewTab(entity: EntityState, settl: Settlement | null, color: string): string {
-    let currentTask = 'Wandering / Idle';
-    if (entity.buildingProjectId !== -1)          currentTask = '🔨 Building';
-    else if (entity.actionAnim.type === 'gather')  currentTask = '🌾 Gathering Food';
-    else if (entity.actionAnim.type === 'mine')    currentTask = '⛏ Mining Resources';
-    else if (entity.actionAnim.type === 'farm')    currentTask = '🪴 Farming';
-    else if (entity.memory.returning)              currentTask = '⛺ Returning Home';
-    else if (entity.social.socialState === 'chatting')  currentTask = '💬 Chatting';
-    else if (entity.social.socialState === 'relaxing')  currentTask = '💤 Relaxing';
-    else if (entity.energy < 0.45)                 currentTask = '🍖 Seeking Food';
+  // ── Live patch — touch only data nodes, never buttons ─────
 
+  private _patchEntityPanel(entity: EntityState, settlements: SettlementManager): void {
+    switch (this._entityTab) {
+      case 'overview': {
+        const energyColor = entity.energy > 0.6 ? '#44cc88' : entity.energy > 0.3 ? '#ccaa22' : '#cc3333';
+        const ageFrac     = entity.age / entity.maxAge;
+        const ageColor    = ageFrac > 0.8 ? '#cc3333' : ageFrac > 0.6 ? '#ccaa22' : '#8899cc';
+        this._setEl('ip-patch-task',    this._taskLabel(entity));
+        this._setEl('ip-patch-energy',  `${Math.round(entity.energy * 100)}%`, energyColor);
+        this._setBar('ip-patch-energy-bar', entity.energy * 100, energyColor);
+        this._setEl('ip-patch-age',     `${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}`, ageColor);
+        this._setBar('ip-patch-age-bar', ageFrac * 100, ageColor);
+        const settl   = entity.settlementId >= 0 ? settlements.getById(entity.settlementId) : null;
+        this._setEl('ip-patch-home',    settl ? `${settl.name} (Lv${settl.level})` : 'Unhoused', '#aa88ff');
+        const carrying = entity.carryingFood > 0
+          ? `🌾 ${entity.carryingFood.toFixed(1)} food`
+          : entity.carryingResource > 0
+            ? `⛏ ${entity.carryingResource.toFixed(1)} ${entity.carryingResourceType ?? ''}`
+            : 'Nothing';
+        this._setEl('ip-patch-carrying', carrying);
+        break;
+      }
+      case 'social': {
+        const s = entity.social;
+        const stressColor = s.stressTicks > 40 ? '#cc4444' : s.stressTicks > 20 ? '#ccaa22' : '#667799';
+        const stateEmoji: Record<string, string> = { idle: '—', chatting: '💬', relaxing: '💤', seeking: '👀' };
+        this._setEl('ip-patch-state',   `${stateEmoji[s.socialState] ?? '–'} ${s.socialState}`);
+        this._setEl('ip-patch-stress',  `${s.stressTicks}`, stressColor);
+        this._setBar('ip-patch-stress-bar', Math.min(100, (s.stressTicks / 120) * 100), stressColor);
+        break;
+      }
+      case 'skills': {
+        for (const [key, val] of Object.entries(entity.skills)) {
+          this._setEl(`ip-patch-skill-${key}`, `${Math.floor(val as number)}`);
+          this._setBar(`ip-patch-skillbar-${key}`, Math.min(100, val as number));
+        }
+        break;
+      }
+      case 'genes': {
+        for (const [key, val] of Object.entries(entity.genes)) {
+          const pct = Math.round((val as number) * 100);
+          this._setEl(`ip-patch-gene-${key}`, `${pct}`);
+          this._setBar(`ip-patch-genebar-${key}`, pct);
+        }
+        break;
+      }
+    }
+  }
+
+  // ── Helpers for targeted DOM updates ─────────────────────
+
+  private _setEl(pid: string, text: string, color?: string): void {
+    const el = this.infoPanel.querySelector(`[data-pid="${pid}"]`) as HTMLElement | null;
+    if (!el) return;
+    if (el.textContent !== text) el.textContent = text;
+    if (color && el.style.color !== color) el.style.color = color;
+  }
+
+  private _setBar(barId: string, pct: number, color?: string): void {
+    const el = this.infoPanel.querySelector(`[data-bar="${barId}"]`) as HTMLElement | null;
+    if (!el) return;
+    const w = `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
+    if (el.style.width !== w) el.style.width = w;
+    if (color && el.style.background !== color) el.style.background = color;
+  }
+
+  // ── Tab content builders ──────────────────────────────────
+
+  private _taskLabel(entity: EntityState): string {
+    if (entity.buildingProjectId !== -1)          return '🔨 Building';
+    if (entity.actionAnim.type === 'gather')       return '🌾 Gathering Food';
+    if (entity.actionAnim.type === 'mine')         return '⛏ Mining Resources';
+    if (entity.actionAnim.type === 'farm')         return '🪴 Farming';
+    if (entity.memory.returning)                   return '⛺ Returning Home';
+    if (entity.social.socialState === 'chatting')  return '💬 Chatting';
+    if (entity.social.socialState === 'relaxing')  return '💤 Relaxing';
+    if (entity.energy < 0.45)                      return '🍖 Seeking Food';
+    return 'Wandering / Idle';
+  }
+
+  private _buildOverviewTab(entity: EntityState, settl: Settlement | null): string {
     const energyPct   = Math.round(entity.energy * 100);
     const energyColor = entity.energy > 0.6 ? '#44cc88' : entity.energy > 0.3 ? '#ccaa22' : '#cc3333';
-    const energyBar   = `<div class="stat-bar-bg"><div class="stat-bar" style="width:${energyPct}%;background:${energyColor}"></div></div>`;
-
-    const agePct   = Math.round((entity.age / entity.maxAge) * 100);
-    const ageColor = agePct > 80 ? '#cc3333' : agePct > 60 ? '#ccaa22' : '#8899cc';
-    const ageBar   = `<div class="stat-bar-bg"><div class="stat-bar" style="width:${agePct}%;background:${ageColor}"></div></div>`;
-
-    const settlName = settl ? `${settl.name} (Lv${settl.level})` : 'Unhoused';
-
-    const carrying = entity.carryingFood > 0
+    const ageFrac     = entity.age / entity.maxAge;
+    const ageColor    = ageFrac > 0.8 ? '#cc3333' : ageFrac > 0.6 ? '#ccaa22' : '#8899cc';
+    const settlName   = settl ? `${settl.name} (Lv${settl.level})` : 'Unhoused';
+    const carrying    = entity.carryingFood > 0
       ? `🌾 ${entity.carryingFood.toFixed(1)} food`
       : entity.carryingResource > 0
         ? `⛏ ${entity.carryingResource.toFixed(1)} ${entity.carryingResourceType ?? ''}`
@@ -224,20 +299,20 @@ export class UIManager {
     return `
       <div class="ip-stat-row">
         <span class="ip-stat-label">Task</span>
-        <span class="ip-stat-val task-val">${currentTask}</span>
+        <span class="ip-stat-val task-val" data-pid="ip-patch-task">${this._taskLabel(entity)}</span>
       </div>
       <div class="ip-stat-row bar-row">
         <span class="ip-stat-label">Energy</span>
         <div class="ip-stat-bar-wrap">
-          ${energyBar}
-          <span class="ip-stat-val bar-num" style="color:${energyColor}">${energyPct}%</span>
+          <div class="stat-bar-bg"><div class="stat-bar" data-bar="ip-patch-energy-bar" style="width:${energyPct}%;background:${energyColor}"></div></div>
+          <span class="ip-stat-val bar-num" data-pid="ip-patch-energy" style="color:${energyColor}">${energyPct}%</span>
         </div>
       </div>
       <div class="ip-stat-row bar-row">
         <span class="ip-stat-label">Age</span>
         <div class="ip-stat-bar-wrap">
-          ${ageBar}
-          <span class="ip-stat-val bar-num" style="color:${ageColor}">${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}</span>
+          <div class="stat-bar-bg"><div class="stat-bar" data-bar="ip-patch-age-bar" style="width:${Math.round(ageFrac * 100)}%;background:${ageColor}"></div></div>
+          <span class="ip-stat-val bar-num" data-pid="ip-patch-age" style="color:${ageColor}">${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}</span>
         </div>
       </div>
       <div class="ip-divider"></div>
@@ -247,37 +322,24 @@ export class UIManager {
       </div>
       <div class="ip-stat-row">
         <span class="ip-stat-label">Home</span>
-        <span class="ip-stat-val" style="color:#aa88ff">${settlName}</span>
+        <span class="ip-stat-val" data-pid="ip-patch-home" style="color:#aa88ff">${settlName}</span>
       </div>
       <div class="ip-stat-row">
         <span class="ip-stat-label">Carrying</span>
-        <span class="ip-stat-val">${carrying}</span>
+        <span class="ip-stat-val" data-pid="ip-patch-carrying">${carrying}</span>
       </div>
-      ${entity.isChild ? `
-      <div class="ip-stat-row">
-        <span class="ip-stat-label">Parent</span>
-        <span class="ip-stat-val">${entity.parentId >= 0 ? '#' + entity.parentId : '—'}</span>
-      </div>` : ''}
+      ${entity.isChild ? `<div class="ip-stat-row"><span class="ip-stat-label">Parent</span><span class="ip-stat-val">${entity.parentId >= 0 ? '#' + entity.parentId : '—'}</span></div>` : ''}
     `;
   }
 
   private _buildSocialTab(entity: EntityState): string {
-    const s = entity.social;
-    const pBtnStyle = this._showPartnerLines
-      ? 'background:#cc4466;color:#fff;border-color:#ff88aa'
-      : 'background:rgba(255,255,255,0.06);color:#cc88aa;border-color:#553344';
-    const fBtnStyle = this._showFriendLines
-      ? 'background:#224466;color:#fff;border-color:#4488cc'
-      : 'background:rgba(255,255,255,0.06);color:#5588aa;border-color:#223344';
-
+    const s           = entity.social;
     const orientIcons: Record<string, string> = { straight: '⇄', gay: '⇆', bi: '⇋' };
     const orientIcon  = s.orientation ? orientIcons[s.orientation] : '–';
-    const stressColor = s.stressTicks > 40 ? '#cc4444' : s.stressTicks > 20 ? '#ccaa22' : '#667799';
     const stressPct   = Math.min(100, (s.stressTicks / 120) * 100);
-    const stressBar   = `<div class="stat-bar-bg"><div class="stat-bar" style="width:${stressPct}%;background:${stressColor}"></div></div>`;
-
+    const stressColor = s.stressTicks > 40 ? '#cc4444' : s.stressTicks > 20 ? '#ccaa22' : '#667799';
     const stateEmoji: Record<string, string> = { idle: '—', chatting: '💬', relaxing: '💤', seeking: '👀' };
-    const roleLabel = s.followingId !== null ? '↩ Following' : s.partnerIds.length > 0 ? '↪ Leading' : '—';
+    const roleLabel   = s.followingId !== null ? '↩ Following' : s.partnerIds.length > 0 ? '↪ Leading' : '—';
 
     const partnerHtml = s.partnerIds.length > 0
       ? s.partnerIds.map(id => `<span class="id-chip partner">#${id}</span>`).join('')
@@ -291,8 +353,8 @@ export class UIManager {
 
     return `
       <div class="ip-social-toggles">
-        <button id="btn-partner-lines" style="${pBtnStyle}">❤ Show Bonds</button>
-        <button id="btn-friend-lines"  style="${fBtnStyle}">★ Show Friends</button>
+        <button id="btn-partner-lines" class="social-toggle-btn${this._showPartnerLines ? ' active-bond' : ''}">❤ Show Bonds</button>
+        <button id="btn-friend-lines"  class="social-toggle-btn${this._showFriendLines  ? ' active-friend' : ''}">★ Show Friends</button>
       </div>
       <div class="ip-divider"></div>
       <div class="ip-stat-row">
@@ -305,7 +367,7 @@ export class UIManager {
       </div>
       <div class="ip-stat-row">
         <span class="ip-stat-label">State</span>
-        <span class="ip-stat-val">${stateEmoji[s.socialState] ?? '–'} ${s.socialState}</span>
+        <span class="ip-stat-val" data-pid="ip-patch-state">${stateEmoji[s.socialState] ?? '–'} ${s.socialState}</span>
       </div>
       <div class="ip-stat-row">
         <span class="ip-stat-label">Role</span>
@@ -328,8 +390,8 @@ export class UIManager {
       <div class="ip-stat-row bar-row">
         <span class="ip-stat-label">Stress</span>
         <div class="ip-stat-bar-wrap">
-          ${stressBar}
-          <span class="ip-stat-val bar-num" style="color:${stressColor}">${s.stressTicks}</span>
+          <div class="stat-bar-bg"><div class="stat-bar" data-bar="ip-patch-stress-bar" style="width:${stressPct}%;background:${stressColor}"></div></div>
+          <span class="ip-stat-val bar-num" data-pid="ip-patch-stress" style="color:${stressColor}">${s.stressTicks}</span>
         </div>
       </div>
     `;
@@ -337,7 +399,7 @@ export class UIManager {
 
   private _buildSkillsTab(entity: EntityState): string {
     const sk = entity.skills;
-    const skillIcons: Record<string, string> = {
+    const skillIcons:  Record<string, string> = {
       hunting: '🏹', gathering: '🌾', farming: '🪴',
       building: '🔨', crafting: '⛏', trading: '⚖', study: '📜',
     };
@@ -345,35 +407,30 @@ export class UIManager {
       hunting: '#ff8833', gathering: '#88dd66', farming: '#44cc88',
       building: '#cc8844', crafting: '#dd6633', trading: '#aa88ff', study: '#44ddff',
     };
-
-    const topSkill = Object.entries(sk).reduce((best, cur) => cur[1] > best[1] ? cur : best, ['', 0]);
+    const topSkill = Object.entries(sk).reduce((best, cur) => (cur[1] as number) > (best[1] as number) ? cur : best, ['', 0]);
+    const dominant = (topSkill[1] as number) >= 5
+      ? `<div class="ip-badge" style="border-color:${skillColors[topSkill[0]] ?? '#8899cc'};color:${skillColors[topSkill[0]] ?? '#8899cc'}">◈ Dominant: ${topSkill[0].toUpperCase()}</div>`
+      : `<div class="ip-badge" style="border-color:#445566;color:#667788">◈ No dominant skill yet</div>`;
 
     const rows = Object.entries(sk).map(([key, val]) => {
-      const pct   = Math.min(100, val);
+      const pct   = Math.min(100, val as number);
       const color = skillColors[key] ?? '#8899cc';
-      const icon  = skillIcons[key] ?? '◈';
-      const isTop = key === topSkill[0] && val >= 5;
+      const icon  = skillIcons[key]  ?? '◈';
+      const isTop = key === topSkill[0] && (val as number) >= 5;
       return `
-        <div class="skill-row ${isTop ? 'top-skill' : ''}">
+        <div class="skill-row${isTop ? ' top-skill' : ''}">
           <span class="skill-icon">${icon}</span>
           <span class="skill-name">${key}</span>
-          <div class="skill-bar-bg"><div class="skill-bar" style="width:${pct}%;background:${color}"></div></div>
-          <span class="skill-val" style="color:${color}">${Math.floor(val)}</span>
-        </div>
-      `;
+          <div class="skill-bar-bg"><div class="skill-bar" data-bar="ip-patch-skillbar-${key}" style="width:${pct}%;background:${color}"></div></div>
+          <span class="skill-val" data-pid="ip-patch-skill-${key}" style="color:${color}">${Math.floor(val as number)}</span>
+        </div>`;
     }).join('');
-
-    const dominant = topSkill[1] >= 5
-      ? `<div class="ip-badge" style="border-color:${skillColors[topSkill[0]] ?? '#8899cc'};color:${skillColors[topSkill[0]] ?? '#8899cc'}">
-          ◈ Dominant: ${topSkill[0].toUpperCase()}
-        </div>`
-      : `<div class="ip-badge" style="border-color:#445566;color:#667788">◈ No dominant skill yet</div>`;
 
     return `${dominant}${rows}`;
   }
 
   private _buildGenesTab(entity: EntityState): string {
-    const geneIcons: Record<string, string> = {
+    const geneIcons:  Record<string, string> = {
       strength: '⚔', intelligence: '◈', sociability: '❤',
       resilience: '◉', creativity: '✦', ambition: '⬡',
     };
@@ -391,93 +448,94 @@ export class UIManager {
     };
 
     return Object.entries(entity.genes).map(([key, val]) => {
-      const pct   = Math.round(val * 100);
+      const pct   = Math.round((val as number) * 100);
       const color = geneColors[key] ?? '#8899cc';
       const icon  = geneIcons[key]  ?? '⬡';
       const desc  = geneDesc[key]   ?? '';
-      const barW  = pct;
       return `
         <div class="gene-card">
           <div class="gene-card-header">
             <span class="gene-card-icon">${icon}</span>
             <span class="gene-card-name">${key.charAt(0).toUpperCase() + key.slice(1)}</span>
-            <span class="gene-card-val" style="color:${color}">${pct}</span>
+            <span class="gene-card-val" data-pid="ip-patch-gene-${key}" style="color:${color}">${pct}</span>
           </div>
           <div class="gene-card-bar-bg">
-            <div class="gene-card-bar" style="width:${barW}%;background:${color}"></div>
+            <div class="gene-card-bar" data-bar="ip-patch-genebar-${key}" style="width:${pct}%;background:${color}"></div>
           </div>
           <div class="gene-card-desc">${desc}</div>
-        </div>
-      `;
+        </div>`;
     }).join('');
   }
 
+  // ── Event bindings ────────────────────────────────────────
+
   private _bindEntityPanelEvents(entity: EntityState, settlements: SettlementManager): void {
-    // Tab switching
     this.infoPanel.querySelectorAll('.ip-tab').forEach(btn => {
       btn.addEventListener('pointerdown', (e) => {
         e.stopPropagation();
         const tab = (btn as HTMLElement).dataset.tab as EntityTab;
-        if (tab) {
+        if (tab && tab !== this._entityTab) {
           this._entityTab = tab;
-          this.updateInfoPanelEntity(entity, settlements);
+          this._buildEntityPanel(entity, settlements);
         }
       });
     });
 
-    // Close button
     document.getElementById('ip-close-btn')?.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
-      this.clearInfoPanel();
+      e.stopPropagation(); this.clearInfoPanel();
     });
 
-    // Social toggles
+    // Social toggles: update only className, never re-render innerHTML
     document.getElementById('btn-partner-lines')?.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       this._showPartnerLines = !this._showPartnerLines;
       this.onTogglePartnerLines?.(this._showPartnerLines);
-      this.updateInfoPanelEntity(entity, settlements);
+      const btn = document.getElementById('btn-partner-lines');
+      if (btn) btn.className = `social-toggle-btn${this._showPartnerLines ? ' active-bond' : ''}`;
     });
+
     document.getElementById('btn-friend-lines')?.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       this._showFriendLines = !this._showFriendLines;
       this.onToggleFriendLines?.(this._showFriendLines);
-      this.updateInfoPanelEntity(entity, settlements);
+      const btn = document.getElementById('btn-friend-lines');
+      if (btn) btn.className = `social-toggle-btn${this._showFriendLines ? ' active-friend' : ''}`;
     });
   }
 
-  // ── Settlement info panel ─────────────────────────────────
+  // ── Settlement panel ──────────────────────────────────────
 
   updateInfoPanelSettlement(settlement: Settlement): void {
-    const levelColors: Record<number, string> = {
-      1: '#c87a22', 2: '#d4aa44', 3: '#88cc66',
-    };
+    if (this._panelMode !== 'settlement') {
+      this._buildSettlementPanel(settlement);
+    } else {
+      this._patchSettlementPanel(settlement);
+    }
+  }
+
+  private _buildSettlementPanel(settlement: Settlement): void {
+    this._panelMode = 'settlement';
+    const levelColors: Record<number, string> = { 1: '#c87a22', 2: '#d4aa44', 3: '#88cc66' };
     const color     = levelColors[settlement.level] ?? '#8899cc';
     const levelName = LEVEL_NAMES[settlement.level];
-
-    const foodPct  = Math.round((settlement.foodStorage / settlement.maxFoodStorage) * 100);
+    const foodPct   = Math.round((settlement.foodStorage / settlement.maxFoodStorage) * 100);
     const foodColor = foodPct > 50 ? '#44aa44' : foodPct > 25 ? '#aaaa22' : '#aa2222';
-    const foodBar   = `<div class="stat-bar-bg"><div class="stat-bar" style="width:${foodPct}%;background:${foodColor}"></div></div>`;
-
-    const activeProjects  = settlement.projects.filter(p => !p.complete);
-    const completedProjects = settlement.projects.filter(p => p.complete);
+    const activeProjects   = settlement.projects.filter(p => !p.complete);
+    const completedCount   = settlement.projects.filter(p => p.complete).length;
 
     const projectsHtml = activeProjects.length > 0
       ? activeProjects.map(p => {
-          const pct = Math.round(p.progress * 100);
+          const pct       = Math.round(p.progress * 100);
           const projColor = p.type === 'dirt_road' ? '#8a7050' : '#a07848';
           const projIcon  = p.type === 'dirt_road' ? '🛤' : '🏠';
           return `
             <div class="project-row">
               <span class="project-icon">${projIcon}</span>
               <span class="project-name">${p.type.replace('_', ' ')}</span>
-              <div class="stat-bar-bg" style="flex:1">
-                <div class="stat-bar" style="width:${pct}%;background:${projColor}"></div>
-              </div>
+              <div class="stat-bar-bg" style="flex:1"><div class="stat-bar" style="width:${pct}%;background:${projColor}"></div></div>
               <span class="project-pct">${pct}%</span>
               <span class="project-workers">${p.workerIds.length}👤</span>
-            </div>
-          `;
+            </div>`;
         }).join('')
       : '<div class="ip-stat-empty" style="padding:4px 0">No active projects</div>';
 
@@ -487,89 +545,70 @@ export class UIManager {
           <span class="ip-settle-icon" style="color:${color}">${settlement.level === 1 ? '⛺' : settlement.level === 2 ? '🏠' : '🏘'}</span>
           <div class="ip-header-text">
             <span class="ip-title" style="color:${color}">${settlement.name}</span>
-            <span class="ip-subtitle">${levelName} · Age ${settlement.age}</span>
+            <span class="ip-subtitle">${levelName} · Age <span data-pid="s-age">${settlement.age}</span></span>
           </div>
         </div>
         <button class="ip-close" id="ip-close-btn">✕</button>
       </div>
-
       <div class="ip-settle-body">
         <div class="settle-stat-grid">
-          <div class="settle-stat">
-            <span class="settle-stat-val">${settlement.population}</span>
-            <span class="settle-stat-label">Population</span>
-          </div>
-          <div class="settle-stat">
-            <span class="settle-stat-val">${settlement.homesBuilt}</span>
-            <span class="settle-stat-label">Homes</span>
-          </div>
-          <div class="settle-stat">
-            <span class="settle-stat-val">${settlement.roadsBuilt}</span>
-            <span class="settle-stat-label">Roads</span>
-          </div>
-          <div class="settle-stat">
-            <span class="settle-stat-val">${Math.floor(settlement.techPoints)}</span>
-            <span class="settle-stat-label">Tech Pts</span>
-          </div>
+          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-pop">${settlement.population}</span><span class="settle-stat-label">Population</span></div>
+          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-homes">${settlement.homesBuilt}</span><span class="settle-stat-label">Homes</span></div>
+          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-roads">${settlement.roadsBuilt}</span><span class="settle-stat-label">Roads</span></div>
+          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-tech">${Math.floor(settlement.techPoints)}</span><span class="settle-stat-label">Tech Pts</span></div>
         </div>
-
         <div class="ip-divider"></div>
-
         <div class="ip-stat-row bar-row">
           <span class="ip-stat-label">Food</span>
           <div class="ip-stat-bar-wrap">
-            ${foodBar}
-            <span class="ip-stat-val bar-num" style="color:${foodColor}">${Math.floor(settlement.foodStorage)}/${settlement.maxFoodStorage}</span>
+            <div class="stat-bar-bg"><div class="stat-bar" data-bar="s-food-bar" style="width:${foodPct}%;background:${foodColor}"></div></div>
+            <span class="ip-stat-val bar-num" data-pid="s-food" style="color:${foodColor}">${Math.floor(settlement.foodStorage)}/${settlement.maxFoodStorage}</span>
           </div>
         </div>
         <div class="ip-stat-row">
           <span class="ip-stat-label">🪵 Wood</span>
-          <span class="ip-stat-val">${Math.floor(settlement.woodStorage)}</span>
+          <span class="ip-stat-val" data-pid="s-wood">${Math.floor(settlement.woodStorage)}</span>
         </div>
         <div class="ip-stat-row">
           <span class="ip-stat-label">🪨 Stone</span>
-          <span class="ip-stat-val">${Math.floor(settlement.stoneStorage)}</span>
+          <span class="ip-stat-val" data-pid="s-stone">${Math.floor(settlement.stoneStorage)}</span>
         </div>
-
         <div class="ip-divider"></div>
-
         <div class="settle-section-title">Active Projects (${activeProjects.length})</div>
         ${projectsHtml}
-
-        ${completedProjects.length > 0 ? `
-          <div class="ip-stat-row" style="margin-top:4px">
-            <span class="ip-stat-label">Completed</span>
-            <span class="ip-stat-val" style="color:#667799">${completedProjects.length} projects</span>
-          </div>
-        ` : ''}
-
+        ${completedCount > 0 ? `<div class="ip-stat-row" style="margin-top:4px"><span class="ip-stat-label">Completed</span><span class="ip-stat-val" style="color:#667799">${completedCount} done</span></div>` : ''}
         <div class="ip-divider"></div>
         <div class="settle-coords">📍 ${settlement.x}, ${settlement.y}</div>
       </div>
     `;
-
     this.infoPanel.classList.add('active');
     document.getElementById('ip-close-btn')?.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
-      this.clearInfoPanel();
+      e.stopPropagation(); this.clearInfoPanel();
     });
   }
 
-  // ── Tile / improvement info panel ─────────────────────────
+  private _patchSettlementPanel(settlement: Settlement): void {
+    const foodPct   = Math.round((settlement.foodStorage / settlement.maxFoodStorage) * 100);
+    const foodColor = foodPct > 50 ? '#44aa44' : foodPct > 25 ? '#aaaa22' : '#aa2222';
+    this._setEl('s-pop',   `${settlement.population}`);
+    this._setEl('s-homes', `${settlement.homesBuilt}`);
+    this._setEl('s-roads', `${settlement.roadsBuilt}`);
+    this._setEl('s-tech',  `${Math.floor(settlement.techPoints)}`);
+    this._setEl('s-age',   `${settlement.age}`);
+    this._setEl('s-food',  `${Math.floor(settlement.foodStorage)}/${settlement.maxFoodStorage}`, foodColor);
+    this._setEl('s-wood',  `${Math.floor(settlement.woodStorage)}`);
+    this._setEl('s-stone', `${Math.floor(settlement.stoneStorage)}`);
+    this._setBar('s-food-bar', foodPct, foodColor);
+  }
+
+  // ── Tile / improvement panel ──────────────────────────────
 
   updateInfoPanelTile(tile: Tile): void {
-    // Check if this tile has a meaningful improvement to feature
-    const improvement = tile.improvement;
-
-    if (improvement === 'dirt_road') {
-      this._showRoadPanel(tile);
-    } else if (improvement === 'rough_home') {
-      this._showHomePanel(tile);
-    } else if (improvement === 'farm') {
-      this._showFarmPanel(tile);
-    } else {
-      this._showGenericTilePanel(tile);
-    }
+    this._panelMode = 'tile';
+    if      (tile.improvement === 'dirt_road')  this._showRoadPanel(tile);
+    else if (tile.improvement === 'rough_home') this._showHomePanel(tile);
+    else if (tile.improvement === 'farm')       this._showFarmPanel(tile);
+    else                                         this._showGenericTilePanel(tile);
   }
 
   private _showRoadPanel(tile: Tile): void {
@@ -588,8 +627,7 @@ export class UIManager {
         <div class="ip-flavour">A rough path worn by the feet of many, connecting settlement to resource.</div>
         <div class="ip-divider"></div>
         ${this._tileBaseStats(tile)}
-      </div>
-    `;
+      </div>`;
     this.infoPanel.classList.add('active');
     this._bindClose();
   }
@@ -607,17 +645,16 @@ export class UIManager {
         <button class="ip-close" id="ip-close-btn">✕</button>
       </div>
       <div class="ip-settle-body">
-        <div class="ip-flavour">A humble structure of wood and mud, built by willing hands. Shelter from the wild.</div>
+        <div class="ip-flavour">A humble structure of wood and mud. Shelter from the wild, built by willing hands.</div>
         <div class="ip-divider"></div>
         ${this._tileBaseStats(tile)}
-      </div>
-    `;
+      </div>`;
     this.infoPanel.classList.add('active');
     this._bindClose();
   }
 
   private _showFarmPanel(tile: Tile): void {
-    const food = tile.resources.find(r => r.type === 'food');
+    const food    = tile.resources.find(r => r.type === 'food');
     const foodPct = food ? Math.round((food.amount / food.max) * 100) : 0;
     this.infoPanel.innerHTML = `
       <div class="ip-header improvement-header">
@@ -631,7 +668,7 @@ export class UIManager {
         <button class="ip-close" id="ip-close-btn">✕</button>
       </div>
       <div class="ip-settle-body">
-        <div class="ip-flavour">Rows cut by careful hands. The regen rate has been doubled by cultivation.</div>
+        <div class="ip-flavour">Rows cut by careful hands. Regen rate doubled by cultivation.</div>
         <div class="ip-divider"></div>
         ${food ? `
           <div class="ip-stat-row bar-row">
@@ -645,11 +682,9 @@ export class UIManager {
             <span class="ip-stat-label">Regen Rate</span>
             <span class="ip-stat-val" style="color:#44cc88">×2.5 base</span>
           </div>
-        ` : ''}
-        <div class="ip-divider"></div>
+          <div class="ip-divider"></div>` : ''}
         ${this._tileBaseStats(tile)}
-      </div>
-    `;
+      </div>`;
     this.infoPanel.classList.add('active');
     this._bindClose();
   }
@@ -669,12 +704,9 @@ export class UIManager {
 
     const resources = tile.resources.length > 0
       ? tile.resources.map(r => {
-          const pct = Math.round((r.amount / r.max) * 100);
-          const resColor = r.type === 'food' ? '#88dd66'
-            : r.type === 'wood'  ? '#6a9a4a'
-            : r.type === 'stone' ? '#9a9a9a'
-            : r.type === 'iron'  ? '#aa7755'
-            : '#aa88ff';
+          const pct      = Math.round((r.amount / r.max) * 100);
+          const resColor = r.type === 'food' ? '#88dd66' : r.type === 'wood' ? '#6a9a4a'
+            : r.type === 'stone' ? '#9a9a9a' : r.type === 'iron' ? '#aa7755' : '#aa88ff';
           return `
             <div class="ip-stat-row bar-row">
               <span class="ip-stat-label">${r.type}</span>
@@ -682,8 +714,7 @@ export class UIManager {
                 <div class="stat-bar-bg"><div class="stat-bar" style="width:${pct}%;background:${resColor}"></div></div>
                 <span class="ip-stat-val bar-num" style="color:${resColor}">${Math.floor(r.amount)}/${r.max}</span>
               </div>
-            </div>
-          `;
+            </div>`;
         }).join('')
       : '<div class="ip-stat-empty">No resources</div>';
 
@@ -703,8 +734,7 @@ export class UIManager {
         <div class="ip-divider"></div>
         <div class="settle-section-title">Resources</div>
         ${resources}
-      </div>
-    `;
+      </div>`;
     this.infoPanel.classList.add('active');
     this._bindClose();
   }
@@ -729,12 +759,13 @@ export class UIManager {
 
   private _bindClose(): void {
     document.getElementById('ip-close-btn')?.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
-      this.clearInfoPanel();
+      e.stopPropagation(); this.clearInfoPanel();
     });
   }
 
   clearInfoPanel(): void {
+    this._panelMode    = 'none';
+    this._lastEntityId = -1;
     this.infoPanel.classList.remove('active');
     this.infoPanel.innerHTML = '';
     this._showPartnerLines = false;

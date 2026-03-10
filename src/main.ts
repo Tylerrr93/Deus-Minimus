@@ -152,7 +152,9 @@ class Game {
       }
     }
 
-    // Refresh selected entity info periodically
+    // Refresh selected entity info.
+    // UIManager.updateInfoPanelEntity() internally patches only changed DOM nodes
+    // (no full rebuild) so it's safe to call every frame without hover flash.
     if (this.selectedEntity) {
       let fresh: EntityState | null = null;
       this.sim.entities.forEachAlive(e => {
@@ -160,10 +162,12 @@ class Game {
       });
       if (fresh) {
         this.selectedEntity = fresh;
-        if (Math.floor(timestamp / 16) % 10 === 0) {
+        // Throttle to every ~8 frames (~130ms) — still smooth, saves CPU
+        if (Math.floor(timestamp / 16) % 8 === 0) {
           this.ui.updateInfoPanelEntity(this.selectedEntity, this.sim.settlements);
         }
       } else {
+        // Entity died — clear panel
         this.selectedEntity = null;
         this.ui.clearInfoPanel();
       }
