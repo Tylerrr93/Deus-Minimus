@@ -409,7 +409,21 @@ export class SettlementManager {
     }
   }
 
-  // ── Tech points ───────────────────────────────────────────
+  // ── God power API ─────────────────────────────────────────
+
+  /**
+   * Manually found a settlement at the given world coordinates.
+   * Used by god powers (e.g. "Found Settlement"). Returns the new
+   * settlement, or null if the location is impassable / too close to
+   * an existing one.
+   */
+  found(x: number, y: number): Settlement | null {
+    const tile = this.world.findPassableTileNear(x, y, 4);
+    if (!tile) return null;
+    return this._create(tile.x, tile.y);
+  }
+
+    // ── Tech points ───────────────────────────────────────────
 
   /** Add tech points to a settlement (called by scholars, events, god powers, etc.). */
   addTechPoints(settlementId: number, amount: number): void {

@@ -72,7 +72,7 @@ export const GOD = {
   /** Hard cap on accumulated favor */
   MAX_FAVOR:         500,
   /** Favor regenerated per simulation tick */
-  FAVOR_REGEN_RATE:  0.05,
+  FAVOR_REGEN_PER_TICK: 0.05,
   /** Multiplier applied when smiting an entity */
   SMITE_RADIUS:      3,
   /** Energy boost applied by Bless Land power */
