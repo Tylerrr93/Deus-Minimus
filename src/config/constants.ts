@@ -65,20 +65,3 @@ export const SETTLEMENT = {
   /** Food consumed per population member per tick */
   FOOD_PER_POP_TICK: 0.002,
 };
-
-export const GOD = {
-  /** Starting favor pool */
-  INITIAL_FAVOR:     100,
-  /** Hard cap on accumulated favor */
-  MAX_FAVOR:         500,
-  /** Favor regenerated per simulation tick */
-  FAVOR_REGEN_PER_TICK: 0.05,
-  /** Multiplier applied when smiting an entity */
-  SMITE_RADIUS:      3,
-  /** Energy boost applied by Bless Land power */
-  BLESS_FOOD_BONUS:  2.0,
-  /** Number of entities seeded by Seed Life power */
-  SEED_LIFE_COUNT:   5,
-  /** Radius of an Apocalypse event in tiles */
-  APOCALYPSE_RADIUS: 12,
-};
