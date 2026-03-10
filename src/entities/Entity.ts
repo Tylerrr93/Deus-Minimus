@@ -65,6 +65,7 @@ export interface EntityState {
   genes:      Genes;
   social:     SocialProfile;
   settlementId: number;        // -1 = unhoused
+  tribeId:      number;        // -1 = no tribe
   alive:      boolean;
   reproductionCooldown: number;
   memory:     EntityMemory;
@@ -165,6 +166,7 @@ export function createEntity(type: EntityType, x: number, y: number, genes?: Gen
       stressTicks:       0,
     },
     settlementId: -1,
+    tribeId:      -1,
     alive: true,
     reproductionCooldown: Math.floor(Math.random() * ENTITY.REPRO_COOLDOWN_TICKS),
     memory: {

@@ -49,6 +49,8 @@ export interface Settlement {
   maxFoodStorage: number;
   woodStorage:  number;
   stoneStorage: number;
+  /** Accumulated technology points driving research and era progression */
+  techPoints:   number;
   age:          number;
   homesBuilt:   number;
   roadsBuilt:   number;
@@ -153,6 +155,7 @@ export class SettlementManager {
       maxFoodStorage: 20,
       woodStorage:    0,
       stoneStorage:   0,
+      techPoints:     0,
       age:            0,
       homesBuilt:     0,
       roadsBuilt:     0,
@@ -404,6 +407,14 @@ export class SettlementManager {
       }
       return;
     }
+  }
+
+  // ── Tech points ───────────────────────────────────────────
+
+  /** Add tech points to a settlement (called by scholars, events, god powers, etc.). */
+  addTechPoints(settlementId: number, amount: number): void {
+    const s = this.settlements.get(settlementId);
+    if (s) s.techPoints += amount;
   }
 
   // ── Resource logistics ────────────────────────────────────
