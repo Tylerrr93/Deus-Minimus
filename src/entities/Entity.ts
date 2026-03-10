@@ -142,12 +142,18 @@ export function canReproduce(a: EntityState, b: EntityState): boolean {
 export function createEntity(type: EntityType, x: number, y: number, genes?: Genes): EntityState {
   const g = genes ?? createGenes();
   const gender: Gender = Math.random() < 0.5 ? 'male' : 'female';
+
+  // Human-scale lifespan: 60–100 in-game years (7200–12000 ticks at 120/year).
+  // Resilience gene adds up to +30% longevity on top.
+  const baseTicks = 7200 + Math.random() * 4800;
+  const maxAge = baseTicks * (1 + g.resilience * 0.3);
+
   return {
     id: nextEntityId(),
     type, x, y,
     energy: 0.8 + Math.random() * 0.2,
     age: 0,
-    maxAge: (800 + Math.random() * 600) * (1 + g.resilience * 0.4),
+    maxAge,
     genes: g,
     social: {
       gender,

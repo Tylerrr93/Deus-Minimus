@@ -67,8 +67,27 @@ export function behaviourAnimTick(ctx: BehaviourContext): BehaviourResult {
 }
 
 export function behaviourGrow(ctx: BehaviourContext): BehaviourResult {
-  const { entity, allEntities } = ctx;
+  const { entity, world, allEntities } = ctx;
   if (!entity.isChild) return {};
+
+  // Children can eat from their current tile so they don't silently starve
+  const tile = world.getTile(entity.x, entity.y);
+  if (tile && entity.energy < 0.6) {
+    const food = tile.resources.find(r => r.type === 'food' && r.amount > 0.1);
+    if (food) {
+      const got = world.extractResource(entity.x, entity.y, 'food', 0.2);
+      entity.energy = Math.min(1, entity.energy + got * 0.5);
+    }
+  }
+
+  // Pull from settlement food when available
+  if (entity.energy < 0.5 && entity.settlementId !== -1) {
+    const s = ctx.settlements.getById(entity.settlementId);
+    if (s && s.foodStorage > 0.3) {
+      const got = ctx.settlements.withdrawFood(s.id, 0.3);
+      entity.energy = Math.min(1, entity.energy + got * 0.6);
+    }
+  }
 
   if (entity.age >= ENTITY.SPECIALIZE_AGE) {
     entity.isChild = false;
@@ -78,36 +97,41 @@ export function behaviourGrow(ctx: BehaviourContext): BehaviourResult {
     return {};
   }
 
+  // Follow parent if alive and nearby
   if (entity.parentId !== -1) {
     const parent = allEntities.get(entity.parentId);
     if (!parent || !parent.alive) { entity.parentId = -1; return {}; }
     const d = taxiDist(entity.x, entity.y, parent.x, parent.y);
-    if (d > 1) return moveToward(entity.x, entity.y, parent.x, parent.y);
+    if (d > 2) return moveToward(entity.x, entity.y, parent.x, parent.y);
   }
+
+  // Wander a little on their own if no parent
+  if (Math.random() < 0.2) return randomMove();
   return {};
 }
 
 export function behaviourHunger(ctx: BehaviourContext): BehaviourResult {
   const { entity } = ctx;
-  const childDiscount = entity.isChild ? 0.5 : 1.0;
+  const childDiscount = entity.isChild ? 0.4 : 1.0;
   const stateDiscount = (entity.social.socialState === 'chatting' ||
                          entity.social.socialState === 'relaxing') ? 0.75 : 1.0;
   const rate = ENTITY.HUNGER_RATE * (1 - entity.genes.resilience * 0.3) * childDiscount * stateDiscount;
   entity.energy -= rate;
 
   // Pull from settlement food storage when running low
-  if (entity.energy < 0.35 && entity.settlementId !== -1) {
+  if (entity.energy < 0.40 && entity.settlementId !== -1) {
     const s = ctx.settlements.getById(entity.settlementId);
     if (s && s.foodStorage > 0.5) {
-      const got = ctx.settlements.withdrawFood(s.id, 0.4);
-      entity.energy = Math.min(1, entity.energy + got * 0.5);
+      const got = ctx.settlements.withdrawFood(s.id, 0.5);
+      entity.energy = Math.min(1, entity.energy + got * 0.6);
     }
   }
 
   if (entity.energy < 0.25) entity.social.stressTicks = Math.min(120, entity.social.stressTicks + 1);
   else if (entity.energy > 0.5) entity.social.stressTicks = Math.max(0, entity.social.stressTicks - 1);
 
-  if (entity.energy < 0.35 && entity.social.socialState !== 'idle') {
+  // Force idle when critically hungry
+  if (entity.energy < 0.25 && entity.social.socialState !== 'idle') {
     entity.social.socialState     = 'idle';
     entity.social.socialStateTicks = 0;
   }
@@ -121,7 +145,12 @@ export function behaviourHunger(ctx: BehaviourContext): BehaviourResult {
 export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
   const { entity, neighbours, allEntities } = ctx;
   const s = entity.social;
+
+  // Children don't have orientation set yet; skip most social logic
   if (entity.isChild || !s.orientation) return {};
+
+  // Don't socialise when hungry — food comes first
+  if (entity.energy < 0.45) return {};
 
   // Clean up dead references
   s.partnerIds       = s.partnerIds.filter(id => allEntities.get(id)?.alive);
@@ -129,7 +158,7 @@ export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
   s.friendIds        = s.friendIds.filter(id => allEntities.get(id)?.alive);
   if (s.followingId !== null && !allEntities.get(s.followingId)?.alive) s.followingId = null;
 
-  // Partner proximity
+  // Partner proximity tracking
   const allPartnerIds = [...s.partnerIds, ...s.affairPartnerIds];
   const anyNearby = allPartnerIds.some(pid => {
     const p = allEntities.get(pid);
@@ -143,6 +172,7 @@ export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
     _dissolvePartnership(entity, s.partnerIds[0], allEntities);
     s.ticksAloneFromPartners = 0;
   }
+
   // Stress breakup
   if (s.stressTicks > 60 && s.partnerIds.length > 0 && Math.random() < 0.006) {
     _dissolvePartnership(entity, s.partnerIds[s.partnerIds.length - 1], allEntities);
@@ -174,7 +204,7 @@ export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
     }
   }
 
-  // Cheating
+  // Cheating cooldown
   if (s.cheatCooldown > 0) {
     s.cheatCooldown--;
   } else if (
@@ -231,14 +261,14 @@ export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
       if (!canReproduce(entity, partner)) continue;
       if (taxiDist(entity.x, entity.y, partner.x, partner.y) <= 3) {
         entity.reproductionCooldown = ENTITY.REPRO_COOLDOWN_TICKS;
-        entity.energy *= 0.82;
+        entity.energy *= 0.88; // less energy cost than before (was 0.82)
         return { reproduce: true, reproduceWith: pid };
       }
     }
   }
 
   // Chat / relax with friends
-  if (entity.energy > 0.55 && s.socialState === 'idle') {
+  if (entity.energy > 0.60 && s.socialState === 'idle') {
     const nearFriend = neighbours.find(n =>
       !n.isChild && n.alive && s.friendIds.includes(n.id) &&
       n.social.socialState === 'idle' &&
@@ -318,11 +348,17 @@ function _dissolvePartnership(entity: EntityState, partnerId: number, allEntitie
 export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, settlements } = ctx;
   const s = entity.social;
-  if (entity.isChild) return {};
-  if ((s.socialState === 'chatting' || s.socialState === 'relaxing') && entity.energy > 0.4) return {};
-  if (entity.buildingProjectId !== -1) return {}; // busy building
 
-  // Return to settlement if carrying enough
+  // Children handle their own eating in behaviourGrow
+  if (entity.isChild) return {};
+
+  // Don't gather while chatting/relaxing UNLESS genuinely hungry
+  if ((s.socialState === 'chatting' || s.socialState === 'relaxing') && entity.energy > 0.35) return {};
+
+  // Don't gather while on a building project
+  if (entity.buildingProjectId !== -1) return {};
+
+  // ── Return home if carrying food ──────────────────────────
   if (entity.memory.returning && entity.settlementId !== -1) {
     const settlement = settlements.getById(entity.settlementId);
     if (!settlement) { entity.memory.returning = false; return {}; }
@@ -336,28 +372,44 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
     return moveToward(entity.x, entity.y, settlement.x, settlement.y);
   }
 
-  // Eat in-place when starving and unhoused
-  if (entity.energy < 0.4 && entity.settlementId === -1) {
+  // ── Eat in-place when hungry, regardless of settlement status ──
+  // KEY FIX: removed the old energy > 0.45 gate — entities always try to eat
+  // when below 0.70 so there's no dead zone where hunger drains without action.
+  if (entity.energy < 0.70) {
     const tile = world.getTile(entity.x, entity.y);
     if (tile) {
-      const food = tile.resources.find(r => r.type === 'food' && r.amount > 0);
+      const food = tile.resources.find(r => r.type === 'food' && r.amount > 0.1);
       if (food) {
-        const extracted = world.extractResource(entity.x, entity.y, 'food', 0.3);
-        entity.memory.ticksSinceFood = 0;
-        entity.actionAnim = { type: 'gather', progress: 0 };
-        return { eat: extracted };
+        const extracted = world.extractResource(entity.x, entity.y, 'food', 0.4);
+        if (extracted > 0) {
+          entity.memory.ticksSinceFood = 0;
+          entity.actionAnim = { type: 'gather', progress: 0 };
+          // Unhoused entities eat directly; settled entities carry and deposit
+          if (entity.settlementId === -1) {
+            return { eat: extracted };
+          } else {
+            entity.carryingFood += extracted;
+            if (entity.carryingFood >= ENTITY.CARRY_CAPACITY) {
+              entity.memory.returning = true;
+            }
+            // Still eat a small portion immediately to survive
+            return { eat: extracted * 0.5 };
+          }
+        }
       }
     }
   }
 
-  if (entity.energy > 0.45) {
+  // ── Scan for the best nearby food tile ───────────────────
+  // Always scan if energy < 0.85 — don't wait until starving to forage
+  if (entity.energy < 0.85) {
     const range = Math.ceil(3 + entity.genes.intelligence * 5);
     let bestTile = null, bestScore = -1;
     for (let dy = -range; dy <= range; dy++) {
       for (let dx = -range; dx <= range; dx++) {
         const t = world.getTile(entity.x + dx, entity.y + dy);
         if (!t || !TILE_PASSABLE[t.type]) continue;
-        const food = t.resources.find(r => r.type === 'food' && r.amount > 0.3);
+        const food = t.resources.find(r => r.type === 'food' && r.amount > 0.2);
         if (food) {
           const score = food.amount / (Math.abs(dx) + Math.abs(dy) + 1);
           if (score > bestScore) { bestScore = score; bestTile = t; }
@@ -375,16 +427,21 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
           if (entity.carryingFood >= ENTITY.CARRY_CAPACITY && entity.settlementId !== -1) {
             entity.memory.returning = true;
           }
+          return { eat: extracted * 0.4 };
         }
         return {};
       }
       return moveToward(entity.x, entity.y, bestTile.x, bestTile.y);
     }
+
+    // Head toward remembered food tile
     if (entity.memory.lastFoodTile) {
       const [fx, fy] = entity.memory.lastFoodTile;
       if (taxiDist(entity.x, entity.y, fx, fy) < 2) entity.memory.lastFoodTile = null;
       else return moveToward(entity.x, entity.y, fx, fy);
     }
+
+    // Current tile has low food value — random wander
     const tile = world.getTile(entity.x, entity.y);
     const fv = TILE_FOOD_VALUE[tile?.type ?? 'plains'];
     if (fv < 0.3) return randomMove();
@@ -397,7 +454,7 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
 
 export function behaviourHunt(ctx: BehaviourContext): BehaviourResult {
   const { entity, world } = ctx;
-  if (entity.isChild || entity.energy > 0.6) return {};
+  if (entity.isChild || entity.energy > 0.75) return {};
   if (entity.buildingProjectId !== -1) return {};
   const s = entity.social;
   if ((s.socialState === 'chatting' || s.socialState === 'relaxing') && entity.energy > 0.4) return {};
@@ -420,7 +477,7 @@ export function behaviourHunt(ctx: BehaviourContext): BehaviourResult {
     const extracted = world.extractResource(entity.x, entity.y, 'food', 0.4 + entity.genes.strength * 0.3);
     entity.carryingFood += extracted;
     entity.actionAnim = { type: 'gather', progress: 0 };
-    return {};
+    return { eat: extracted * 0.5 };
   }
   return moveToward(entity.x, entity.y, bestTile.x, bestTile.y);
 }
@@ -452,14 +509,21 @@ export function behaviourFarm(ctx: BehaviourContext): BehaviourResult {
   if ((entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') && entity.energy > 0.4) return {};
   if (entity.buildingProjectId !== -1) return {};
 
+  // Only attempt farming when well-fed — don't wander for farm tiles when hungry
+  if (entity.energy < 0.50) return {};
+
   const tile = world.getTile(entity.x, entity.y);
   if (!tile) return {};
+
+  // Create farm on current plains tile
   if (tile.type === 'plains' && !tile.improvement && Math.random() < 0.002) {
     tile.improvement = 'farm';
     const food = tile.resources.find(r => r.type === 'food');
     if (food) food.regenRate *= 2.5;
     return {};
   }
+
+  // Harvest from farm tile
   if (tile.improvement === 'farm') {
     const extracted = world.extractResource(entity.x, entity.y, 'food', 0.6);
     if (extracted > 0) {
@@ -471,11 +535,14 @@ export function behaviourFarm(ctx: BehaviourContext): BehaviourResult {
     }
     return {};
   }
-  const range = 6;
+
+  // Only move toward a farm tile if one is very close (range 3, not 6)
+  // This prevents farmers from wandering far away from food looking for farm tiles
+  const range = 3;
   for (let dy = -range; dy <= range; dy++) {
     for (let dx = -range; dx <= range; dx++) {
       const t = world.getTile(entity.x + dx, entity.y + dy);
-      if (t && (t.improvement === 'farm' || t.type === 'plains') && TILE_PASSABLE[t.type]) {
+      if (t && t.improvement === 'farm' && TILE_PASSABLE[t.type]) {
         return moveToward(entity.x, entity.y, t.x, t.y);
       }
     }
@@ -540,11 +607,6 @@ export function behaviourReturnResources(ctx: BehaviourContext): BehaviourResult
 
 // ── Building ──────────────────────────────────────────────────
 
-/**
- * Entities look for an available building project in their settlement
- * and move to a tile to work on it.
- * Only active when the settlement is at level 2+ and the entity has enough energy.
- */
 export function behaviourBuild(ctx: BehaviourContext): BehaviourResult {
   const { entity, settlements } = ctx;
   if (entity.isChild || entity.energy < 0.55) return {};
@@ -555,10 +617,8 @@ export function behaviourBuild(ctx: BehaviourContext): BehaviourResult {
   const settlement = settlements.getById(entity.settlementId);
   if (!settlement || settlement.level < 2) return {};
 
-  // Only ambitious or strong entities drive construction
   if (entity.genes.ambition < 0.28 && entity.genes.strength < 0.45) return {};
 
-  // 30% chance to skip per tick — building is not frantic
   if (Math.random() < 0.30) return {};
 
   const project = settlements.getAvailableProject(entity.settlementId, entity.id);
@@ -627,6 +687,9 @@ export function behaviourTrade(ctx: BehaviourContext): BehaviourResult {
 export type BehaviourFn = (ctx: BehaviourContext) => BehaviourResult;
 
 export const BEHAVIOUR_PIPELINES: Record<EntityType, BehaviourFn[]> = {
+  // hunter_gatherer and villager share the same survival-first pipeline.
+  // villagers gain build/farm on top but food always takes priority via
+  // the energy guards inside those behaviours.
   hunter_gatherer: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
     behaviourSocialize,
@@ -635,25 +698,28 @@ export const BEHAVIOUR_PIPELINES: Record<EntityType, BehaviourFn[]> = {
   villager: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
     behaviourSocialize,
-    behaviourBuild, behaviourFarm, behaviourGather, behaviourTerritorialWander,
+    behaviourHunt, behaviourBuild, behaviourFarm, behaviourGather,
+    behaviourTerritorialWander,
   ],
   farmer: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
     behaviourSocialize,
-    behaviourBuild, behaviourFarm, behaviourTerritorialWander,
+    behaviourBuild, behaviourFarm, behaviourGather, behaviourTerritorialWander,
   ],
   craftsman: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
     behaviourSocialize,
-    behaviourBuild, behaviourMine, behaviourReturnResources, behaviourTerritorialWander,
+    behaviourBuild, behaviourMine, behaviourReturnResources,
+    behaviourGather, behaviourTerritorialWander,
   ],
   warrior: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
-    behaviourSocialize, behaviourPatrol,
+    behaviourSocialize,
+    behaviourGather, behaviourPatrol,
   ],
   merchant: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
-    behaviourSocialize, behaviourTrade, behaviourTerritorialWander,
+    behaviourSocialize, behaviourTrade, behaviourGather, behaviourTerritorialWander,
   ],
   scholar: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
@@ -661,6 +727,6 @@ export const BEHAVIOUR_PIPELINES: Record<EntityType, BehaviourFn[]> = {
   ],
   noble: [
     behaviourAge, behaviourAnimTick, behaviourGrow, behaviourHunger,
-    behaviourSocialize,
+    behaviourSocialize, behaviourGather,
   ],
 };

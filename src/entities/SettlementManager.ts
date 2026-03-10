@@ -99,7 +99,6 @@ export class SettlementManager {
     for (const anchor of unhoused) {
       if (assigned.has(anchor.id)) continue;
 
-      // Collect nearby unhoused entities
       const cluster = unhoused.filter(e =>
         !assigned.has(e.id) &&
         Math.abs(e.x - anchor.x) + Math.abs(e.y - anchor.y) <= ENTITY.CLUSTER_RADIUS,
@@ -111,7 +110,6 @@ export class SettlementManager {
       const cx = Math.round(cluster.reduce((s, e) => s + e.x, 0) / cluster.length);
       const cy = Math.round(cluster.reduce((s, e) => s + e.y, 0) / cluster.length);
 
-      // Enforce minimum distance between settlements
       const tooClose = [...this.settlements.values()].some(s =>
         Math.abs(s.x - cx) + Math.abs(s.y - cy) < SETTLEMENT.MIN_DISTANCE,
       );
@@ -123,13 +121,16 @@ export class SettlementManager {
       const s = this._create(tile.x, tile.y);
       if (!s) continue;
 
-      // Assign up to 12 cluster members
+      // Assign up to 12 cluster members; give them a food head-start
       for (const e of cluster.slice(0, 12)) {
         e.settlementId            = s.id;
         e.memory.homeSettlement   = [s.x, s.y];
         s.population++;
         assigned.add(e.id);
       }
+
+      // Seed the new settlement with some food so residents don't immediately starve
+      s.foodStorage = Math.min(s.maxFoodStorage, 10);
 
       created.push(s);
     }
@@ -151,8 +152,8 @@ export class SettlementManager {
       x, y,
       level: 1,
       population:     0,
-      foodStorage:    5,
-      maxFoodStorage: 20,
+      foodStorage:    10,
+      maxFoodStorage: 30,
       woodStorage:    0,
       stoneStorage:   0,
       techPoints:     0,
@@ -182,13 +183,11 @@ export class SettlementManager {
       // Recount living adult population
       s.population = entities.filter(e => e.alive && !e.isChild && e.settlementId === s.id).length;
 
-      // Consume food
+      // Consume food — rate is already very low per tick, scaled to new hunger rate
       s.foodStorage = Math.max(0, s.foodStorage - s.population * SETTLEMENT.FOOD_PER_POP_TICK);
 
-      // Level progression
       this._checkLevelUp(s);
 
-      // Project generation & housekeeping
       if (s.projectCooldown > 0) {
         s.projectCooldown--;
       } else {
@@ -210,13 +209,13 @@ export class SettlementManager {
         s.population    >= SETTLEMENT.LEVEL2_POP &&
         s.foodStorage   >= SETTLEMENT.LEVEL2_FOOD) {
       s.level          = 2;
-      s.maxFoodStorage = 40;
+      s.maxFoodStorage = 50;
     }
     if (s.level === 2 &&
         s.population >= SETTLEMENT.LEVEL3_POP &&
         s.homesBuilt >= SETTLEMENT.LEVEL3_HOMES) {
       s.level          = 3;
-      s.maxFoodStorage = 80;
+      s.maxFoodStorage = 100;
     }
     if (s.level !== prev) {
       s.justLeveledUp = true;
@@ -236,7 +235,6 @@ export class SettlementManager {
     const needHome = s.homesBuilt < Math.floor(s.population / 3) + 1;
     const needRoad = s.roadsBuilt < 3 + (s.level - 1);
 
-    // Bias toward homes first, then roads
     if (needHome && (Math.random() < 0.6 || !needRoad)) {
       const p = this._createHomeProject(s);
       if (p) { s.projects.push(p); s.projectCooldown = SETTLEMENT.PROJECT_COOLDOWN; }
@@ -254,9 +252,7 @@ export class SettlementManager {
           if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
           const t = this.world.getTile(s.x + dx, s.y + dy);
           if (!t || !TILE_PASSABLE[t.type] || t.improvement) continue;
-          // Don't conflict with an existing project tile
           if (this._tileInUse(s.x + dx, s.y + dy)) continue;
-
           return this._makeProject(s.id, 'rough_home', [[s.x + dx, s.y + dy]], 2);
         }
       }
@@ -341,19 +337,17 @@ export class SettlementManager {
 
   // ── Building project API ──────────────────────────────────
 
-  /** Returns a project that still needs workers from the given settlement. */
   getAvailableProject(settlementId: number, entityId: number): BuildingProject | null {
     const s = this.settlements.get(settlementId);
     if (!s) return null;
     for (const p of s.projects) {
       if (p.complete) continue;
-      if (p.workerIds.includes(entityId)) return p;       // already assigned
-      if (p.workerIds.length < p.maxWorkers) return p;    // open slot
+      if (p.workerIds.includes(entityId)) return p;
+      if (p.workerIds.length < p.maxWorkers) return p;
     }
     return null;
   }
 
-  /** Returns the nearest incomplete tile in the project to the entity. */
   getNearestProjectTile(project: BuildingProject, ex: number, ey: number): [number, number] | null {
     let best: [number, number] | null = null;
     let bestDist = Infinity;
@@ -366,7 +360,6 @@ export class SettlementManager {
     return best;
   }
 
-  /** Advance a specific project tile; complete the project when all tiles are done. */
   advanceProject(
     projectId: number,
     tileX: number,
@@ -411,21 +404,14 @@ export class SettlementManager {
 
   // ── God power API ─────────────────────────────────────────
 
-  /**
-   * Manually found a settlement at the given world coordinates.
-   * Used by god powers (e.g. "Found Settlement"). Returns the new
-   * settlement, or null if the location is impassable / too close to
-   * an existing one.
-   */
   found(x: number, y: number): Settlement | null {
     const tile = this.world.findPassableTileNear(x, y, 4);
     if (!tile) return null;
     return this._create(tile.x, tile.y);
   }
 
-    // ── Tech points ───────────────────────────────────────────
+  // ── Tech points ───────────────────────────────────────────
 
-  /** Add tech points to a settlement (called by scholars, events, god powers, etc.). */
   addTechPoints(settlementId: number, amount: number): void {
     const s = this.settlements.get(settlementId);
     if (s) s.techPoints += amount;
