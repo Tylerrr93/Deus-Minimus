@@ -189,7 +189,7 @@ export class InputHandler {
         
         if (this.em) {
           const ts = WORLD.TILE_SIZE;
-          const pickRadius = ts * 1.2;
+          const pickRadius = ts * 0.9;
           const hitEntities: { dist: number, entity: EntityState }[] = [];
           
           this.em.forEachAlive(e => {
