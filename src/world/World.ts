@@ -85,10 +85,15 @@ export class World {
       regenCrashTicks: 0,
     });
 
-    if (type === 'plains' || type === 'forest') {
-      resources.push(makeRes('food', 2 + rng * 3, 8, 0.010));
+    // ── Food: reduced max and regen so it actually runs out under pressure ──
+    // Old: amount 2-5, max 8, regen 0.010
+    // New: amount 1-3, max 5, regen 0.004 (~2.5× slower recovery)
+    if (type === 'plains') {
+      resources.push(makeRes('food', 1 + rng * 2, 5, 0.004));
     }
     if (type === 'forest') {
+      // Forest is slightly richer than plains but still scarce
+      resources.push(makeRes('food', 1.5 + rng * 2, 6, 0.005));
       resources.push(makeRes('wood', 5 + rng2 * 5, 15, 0.005));
     }
     if (type === 'mountain') {
@@ -108,7 +113,8 @@ export class World {
 
   isPassable(x: number, y: number): boolean {
     const tile = this.getTile(x, y);
-    return tile ? TILE_PASSABLE[tile.type] && !tile.occupied : false;
+    // Note: occupied no longer blocks movement — tiles can be shared
+    return tile ? TILE_PASSABLE[tile.type] : false;
   }
 
   getNeighbours(x: number, y: number, range: number = 1): Tile[] {
@@ -133,7 +139,8 @@ export class World {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
           const t = this.getTile(x + dx, y + dy);
-          if (t && TILE_PASSABLE[t.type] && !t.occupied) return t;
+          // Tiles are shareable now — only check terrain passability
+          if (t && TILE_PASSABLE[t.type]) return t;
         }
       }
     }
@@ -145,11 +152,9 @@ export class World {
       for (let x = 0; x < this.cols; x++) {
         const tile = this.tiles[y][x];
         for (const res of tile.resources) {
-          // Tick down crash cooldown and restore regen rate when it expires
           if (res.regenCrashTicks > 0) {
             res.regenCrashTicks--;
             if (res.regenCrashTicks === 0) {
-              // Full recovery
               res.regenRate = res.baseRegenRate;
             }
           }
@@ -163,8 +168,6 @@ export class World {
 
   /**
    * Extract `amount` of `type` from tile (x, y).
-   * If food hits 0 for the first time, enter ecological crash state:
-   * regenRate drops to 10% of base for REGEN_CRASH_TICKS ticks.
    */
   extractResource(x: number, y: number, type: string, amount: number): number {
     const tile = this.getTile(x, y);
@@ -176,7 +179,6 @@ export class World {
     const extracted = Math.min(res.amount, amount);
     res.amount -= extracted;
 
-    // Trigger ecological crash when food tile is stripped to 0
     if (type === 'food' && wasAboveZero && res.amount <= 0 && res.regenCrashTicks === 0) {
       res.regenRate = res.baseRegenRate * REGEN_CRASH_FRACTION;
       res.regenCrashTicks = REGEN_CRASH_TICKS;
@@ -191,7 +193,7 @@ export class World {
       const x = Math.floor(Math.random() * this.cols);
       const y = Math.floor(Math.random() * this.rows);
       const tile = this.getTile(x, y);
-      if (tile && TILE_PASSABLE[tile.type] && !tile.occupied) return tile;
+      if (tile && TILE_PASSABLE[tile.type]) return tile;
     }
     return null;
   }

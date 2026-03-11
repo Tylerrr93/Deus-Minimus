@@ -1,26 +1,5 @@
 // ============================================================
 // BEHAVIOURS — single universal pipeline for all persons.
-// Skills gate effectiveness; no hard type switches.
-//
-// REWORK 1 CHANGES:
-//  - behaviourGrow:      children now run lightweight errands near settlement
-//  - behaviourSocialize: reproduction gated on settlement food surplus AND
-//                        housing capacity (homesBuilt * SHELTER_PER_HOME)
-//  - moveEntity (via constants): MOVE_ENERGY_COST raised to create
-//                        natural foraging soft-cap
-//
-// REWORK 2 CHANGES:
-//  - currentTask integration: behaviourGather, behaviourMine, behaviourBuild,
-//    behaviourFarm all check entity.currentTask so they only run when the
-//    Settlement Brain has assigned them that role. This removes the old
-//    implicit skill-gating-only pipeline.
-//  - behaviourDedicatedFarm: NEW — handles entities with currentTask='farm'
-//    for Brain-designated farm plots. Uses AGRI_REGEN_MULTIPLIER / AGRI_FOOD_CAP
-//    boosts and yields much higher throughput than ad-hoc farming.
-//  - behaviourWoodcut: NEW — handles entities with currentTask='wood', ranges
-//    further than a miner and targets only 'wood' resources.
-//  - PERSON_PIPELINE updated: behaviourDedicatedFarm and behaviourWoodcut
-//    inserted before behaviourFarm / behaviourMine respectively.
 // ============================================================
 
 import {
@@ -97,13 +76,6 @@ export function tickAnim(entity: EntityState, nowMs: number): void {
 
 // ── Reproduction economic check ────────────────────────────────
 
-/**
- * Returns true if the entity is allowed to reproduce given current
- * settlement food surplus and housing capacity.
- *
- * Settled:  foodStorage > population × REPRO_FOOD_PER_CAP AND population < housing cap.
- * Nomad:    personal energy must be above REPRO_NOMAD_ENERGY.
- */
 function canReproduceEconomically(entity: EntityState, settlements: SettlementManager): boolean {
   if (entity.settlementId === -1) {
     return entity.energy >= ENTITY.REPRO_NOMAD_ENERGY;
@@ -118,14 +90,8 @@ function canReproduceEconomically(entity: EntityState, settlements: SettlementMa
 
 // ── Task helpers ───────────────────────────────────────────────
 
-/**
- * Returns true if the entity's currentTask matches one of the allowed values,
- * OR if no settlement brain is active (settlementId === -1) — nomads always
- * act on instinct without task assignment.
- */
 function taskIs(entity: EntityState, ...tasks: EntityState['currentTask'][]): boolean {
   if (entity.settlementId === -1) return true;
-  // 'idle' means "no assignment yet" — allow the default pipeline to run
   if (!entity.currentTask || entity.currentTask === 'idle') return true;
   return tasks.includes(entity.currentTask);
 }
@@ -141,13 +107,12 @@ export function behaviourAge(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-// ── behaviourGrow (Rework 1: lightweight errands) ──────────────
+// ── behaviourGrow ──────────────────────────────────────────────
 
 export function behaviourGrow(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, allEntities } = ctx;
   if (!entity.isChild) return {};
 
-  // Eat from tile or settlement stores
   const tile = world.getTile(entity.x, entity.y);
   if (tile && entity.energy < 0.65) {
     const food = tile.resources.find(r => r.type === 'food' && r.amount > 0.1);
@@ -172,7 +137,6 @@ export function behaviourGrow(ctx: BehaviourContext): BehaviourResult {
     return {};
   }
 
-  // Lightweight errand for settled children aged >= 60 ticks
   if (entity.settlementId !== -1 && entity.age >= 60) {
     const s = ctx.settlements.getById(entity.settlementId);
     if (s) {
@@ -223,7 +187,6 @@ export function behaviourGrow(ctx: BehaviourContext): BehaviourResult {
     }
   }
 
-  // Nomad child: follow parent or wander
   if (entity.parentId !== -1) {
     const parent = allEntities.get(entity.parentId);
     if (!parent || !parent.alive) { entity.parentId = -1; return {}; }
@@ -267,7 +230,7 @@ export function behaviourHunger(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-// ── behaviourSocialize (Rework 1: economic reproduction gate) ──
+// ── behaviourSocialize ─────────────────────────────────────────
 
 export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
   const { entity, neighbours, allEntities } = ctx;
@@ -356,7 +319,6 @@ export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
     }
   }
 
-  // Reproduction — gated on economics (Rework 1)
   if (entity.reproductionCooldown > 0) {
     entity.reproductionCooldown--;
   } else if (entity.energy >= ENTITY.REPRO_ENERGY_THRESHOLD) {
@@ -376,7 +338,6 @@ export function behaviourSocialize(ctx: BehaviourContext): BehaviourResult {
     }
   }
 
-  // Chat with friends
   if (entity.energy > 0.60 && s.socialState === 'idle') {
     const nearFriend = neighbours.find(n =>
       !n.isChild && n.alive && s.friendIds.includes(n.id) &&
@@ -444,12 +405,11 @@ function _dissolvePartnership(entity: EntityState, partnerId: number, all: Map<n
   }
 }
 
-// ── behaviourGather (Rework 2: task-gated) ────────────────────
+// ── behaviourGather ────────────────────────────────────────────
 
 export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, settlements, nowMs } = ctx;
   if (entity.isChild) return {};
-  // Rework 2: only run if the brain assigned 'gather', or no brain is active
   if (!taskIs(entity, 'gather')) return {};
 
   const soc = entity.social;
@@ -492,10 +452,14 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
       }
     }
 
-    const range = Math.ceil(3 + entity.genes.intelligence * 4 + entity.skills.gathering * 0.08);
+    // Constrain foraging range to leash radius for settled entities
+    const maxRange = entity.settlementId !== -1
+      ? Math.min(ENTITY.LEASH_RADIUS, Math.ceil(3 + entity.genes.intelligence * 4 + entity.skills.gathering * 0.08))
+      : Math.ceil(3 + entity.genes.intelligence * 4 + entity.skills.gathering * 0.08);
+
     let bestTile = null, bestScore = -1;
-    for (let dy = -range; dy <= range; dy++) {
-      for (let dx = -range; dx <= range; dx++) {
+    for (let dy = -maxRange; dy <= maxRange; dy++) {
+      for (let dx = -maxRange; dx <= maxRange; dx++) {
         const t = world.getTile(entity.x + dx, entity.y + dy);
         if (!t || !TILE_PASSABLE[t.type]) continue;
         const f = t.resources.find(r => r.type === 'food' && r.amount > 0.2);
@@ -572,24 +536,8 @@ export function behaviourHunt(ctx: BehaviourContext): BehaviourResult {
   return moveToward(entity.x, entity.y, bestTile.x, bestTile.y);
 }
 
-// ── behaviourDedicatedFarm (NEW — Rework 2: Agrarian Shift) ───
+// ── behaviourDedicatedFarm ─────────────────────────────────────
 
-/**
- * Handles entities whose currentTask = 'farm' after the Agrarian Shift.
- *
- * Unlike the old ad-hoc behaviourFarm which just wandered onto any plains
- * tile and had a random chance to create a farm, this behaviour:
- *  1. Checks the settlement's farmPlots list for the nearest designated plot.
- *  2. Travels directly to it.
- *  3. On arrival, applies the full AGRI_REGEN_MULTIPLIER + AGRI_FOOD_CAP
- *     boost if not already applied (idempotent check via food.max).
- *  4. Harvests AGRI_HARVEST_AMOUNT × farming skill bonus every tick while
- *     standing on the plot.
- *  5. Returns to settlement when at carry capacity.
- *
- * This produces ~2–3× more food per entity-tick than foraging, which
- * is what "frees up the rest of the population for advanced roles."
- */
 export function behaviourDedicatedFarm(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, settlements, nowMs } = ctx;
   if (entity.isChild) return {};
@@ -601,7 +549,6 @@ export function behaviourDedicatedFarm(ctx: BehaviourContext): BehaviourResult {
   const s = settlements.getById(entity.settlementId);
   if (!s || !s.agriUnlocked || s.farmPlots.length === 0) return {};
 
-  // Find nearest designated farm plot
   let bestPlot: [number, number] | null = null;
   let bestDist = Infinity;
   for (const [px, py] of s.farmPlots) {
@@ -612,24 +559,20 @@ export function behaviourDedicatedFarm(ctx: BehaviourContext): BehaviourResult {
 
   const [px, py] = bestPlot;
 
-  // Travel to plot
   if (entity.x !== px || entity.y !== py) {
     return moveToward(entity.x, entity.y, px, py);
   }
 
-  // On the plot: apply agrarian boost if not yet done (max < AGRI_FOOD_CAP)
   const tile = world.getTile(px, py);
   if (!tile) return {};
   const food = tile.resources.find(r => r.type === 'food');
   if (food && food.max < SETTLEMENT.AGRI_FOOD_CAP) {
-    // First time a dedicated farmer stands here — apply full boost
     food.baseRegenRate = food.baseRegenRate * SETTLEMENT.AGRI_REGEN_MULTIPLIER;
     food.regenRate     = food.baseRegenRate;
     food.max           = SETTLEMENT.AGRI_FOOD_CAP;
-    gainSkill(entity.skills, 'farming', 1.0); // breakthrough skill gain
+    gainSkill(entity.skills, 'farming', 1.0);
   }
 
-  // Harvest
   const farmBonus     = 1 + entity.skills.farming * 0.02;
   const harvestAmount = SETTLEMENT.AGRI_HARVEST_AMOUNT * farmBonus;
   const extracted     = world.extractResource(px, py, 'food', harvestAmount);
@@ -641,27 +584,17 @@ export function behaviourDedicatedFarm(ctx: BehaviourContext): BehaviourResult {
     if (entity.carryingFood >= ENTITY.CARRY_CAPACITY) {
       entity.memory.returning = true;
     }
-    return { eat: extracted * 0.1 }; // farmer keeps a tiny share on-site
+    return { eat: extracted * 0.1 };
   }
 
-  // Plot temporarily depleted — wait (it regens fast thanks to the boost)
   return {};
 }
 
-// ── behaviourFarm (legacy: pre-agrarian ad-hoc farming) ────────
+// ── behaviourFarm (legacy ad-hoc) ─────────────────────────────
 
-/**
- * Still runs for entities with no task assignment or pre-agri settlements.
- * Rework 2: skipped entirely if entity.currentTask === 'farm' (that case
- * is handled by behaviourDedicatedFarm above) or any non-farm task.
- */
 export function behaviourFarm(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, nowMs } = ctx;
   if (entity.isChild) return {};
-
-  // If the brain has specifically assigned 'farm', behaviourDedicatedFarm
-  // runs first in the pipeline and returns early, so we won't reach here.
-  // This guard handles the inverse: don't spontaneously farm when assigned elsewhere.
   if (entity.currentTask && entity.currentTask !== 'idle' && entity.currentTask !== 'farm') return {};
 
   const canFarm = entity.skills.farming >= 2 || entity.genes.creativity > 0.5;
@@ -708,13 +641,8 @@ export function behaviourFarm(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-// ── behaviourWoodcut (NEW — Rework 2) ─────────────────────────
+// ── behaviourWoodcut ───────────────────────────────────────────
 
-/**
- * Dedicated wood-cutting for entities assigned currentTask='wood'.
- * Ranges further than a miner (wood is on the surface) and only
- * targets 'wood' resources to avoid wasting trips on stone/iron.
- */
 export function behaviourWoodcut(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, settlements, nowMs } = ctx;
   if (entity.isChild) return {};
@@ -722,7 +650,6 @@ export function behaviourWoodcut(ctx: BehaviourContext): BehaviourResult {
   if (entity.energy < 0.40) return {};
   if ((entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') && entity.energy > 0.4) return {};
 
-  // Return carrying load first
   if (entity.memory.returning && entity.settlementId !== -1) {
     const s = settlements.getById(entity.settlementId);
     if (!s) { entity.memory.returning = false; return {}; }
@@ -757,7 +684,6 @@ export function behaviourWoodcut(ctx: BehaviourContext): BehaviourResult {
     }
   }
 
-  // Search for nearest forest/wood tile
   const range = Math.ceil(8 + entity.skills.crafting * 0.2);
   for (let dy = -range; dy <= range; dy++) {
     for (let dx = -range; dx <= range; dx++) {
@@ -771,12 +697,11 @@ export function behaviourWoodcut(ctx: BehaviourContext): BehaviourResult {
   return {};
 }
 
-// ── behaviourMine (Rework 2: task-gated) ──────────────────────
+// ── behaviourMine ──────────────────────────────────────────────
 
 export function behaviourMine(ctx: BehaviourContext): BehaviourResult {
   const { entity, world, nowMs } = ctx;
   if (entity.isChild) return {};
-  // Only mine when brain has assigned it, or no brain (nomad/unassigned)
   if (!taskIs(entity, 'mine')) return {};
   if (entity.skills.crafting < 3 && entity.genes.strength < 0.55) return {};
   if ((entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') && entity.energy > 0.4) return {};
@@ -833,7 +758,13 @@ export function behaviourReturnResources(ctx: BehaviourContext): BehaviourResult
   return moveToward(entity.x, entity.y, s.x, s.y);
 }
 
-// ── behaviourBuild (Rework 2: task-gated) ─────────────────────
+// ── behaviourBuild ─────────────────────────────────────────────
+//
+// FIX: Removed the 28% random skip that was the primary blocker.
+// FIX: Lowered skill gate — any adult with genes.strength > 0.35 OR
+//      genes.ambition > 0.30 OR building skill >= 1 can contribute.
+//      Previously required ambition >= 0.45 or strength >= 0.55
+//      which excluded most starting entities.
 
 export function behaviourBuild(ctx: BehaviourContext): BehaviourResult {
   const { entity, settlements, nowMs } = ctx;
@@ -846,12 +777,11 @@ export function behaviourBuild(ctx: BehaviourContext): BehaviourResult {
   const settlement = settlements.getById(entity.settlementId);
   if (!settlement || settlement.level < 2) return {};
 
-  const canBuild = entity.skills.building >= 2
-    || entity.genes.ambition >= 0.45
-    || entity.genes.strength >= 0.55;
+  // Lowered gate: most adults can contribute to building
+  const canBuild = entity.skills.building >= 1
+    || entity.genes.ambition >= 0.30
+    || entity.genes.strength >= 0.40;
   if (!canBuild) return {};
-
-  if (Math.random() < 0.28) return {};
 
   const project = settlements.getAvailableProject(entity.settlementId, entity.id);
   if (!project) { entity.buildingProjectId = -1; return {}; }
@@ -872,6 +802,10 @@ export function behaviourBuild(ctx: BehaviourContext): BehaviourResult {
 }
 
 // ── behaviourTerritorialWander ─────────────────────────────────
+//
+// FIX: Tightened leash from 20 tiles to ENTITY.LEASH_RADIUS (12).
+// Entities near a settlement now drift back more aggressively
+// instead of wandering halfway across the map.
 
 export function behaviourTerritorialWander(ctx: BehaviourContext): BehaviourResult {
   const { entity } = ctx;
@@ -880,12 +814,18 @@ export function behaviourTerritorialWander(ctx: BehaviourContext): BehaviourResu
   if (entity.social.socialState === 'chatting' || entity.social.socialState === 'relaxing') return {};
   if (entity.memory.returning) return {};
   if (entity.buildingProjectId !== -1) return {};
-  // Rework 2: wander only when idle (no task) or in food-idle surplus state
   if (entity.currentTask && entity.currentTask !== 'idle') return {};
 
   if (entity.memory.homeSettlement) {
     const [hx, hy] = entity.memory.homeSettlement;
-    if (taxiDist(entity.x, entity.y, hx, hy) > 20 && Math.random() < 0.3) {
+    const dist = taxiDist(entity.x, entity.y, hx, hy);
+    // Pull back more aggressively — at 75% of leash start heading home,
+    // at 100% always head home.
+    const softLeash = ENTITY.LEASH_RADIUS * 0.75;
+    if (dist > ENTITY.LEASH_RADIUS) {
+      return moveToward(entity.x, entity.y, hx, hy);
+    }
+    if (dist > softLeash && Math.random() < 0.5) {
       return moveToward(entity.x, entity.y, hx, hy);
     }
   }
@@ -923,15 +863,7 @@ export function behaviourTrade(ctx: BehaviourContext): BehaviourResult {
   return moveToward(entity.x, entity.y, deficit.x, deficit.y);
 }
 
-// ── SINGLE UNIVERSAL PIPELINE ──────────────────────────────────
-//
-// Rework 2 ordering rationale:
-//   behaviourDedicatedFarm runs BEFORE behaviourFarm so that brain-assigned
-//   farmers take the high-yield path and never fall through to ad-hoc farming.
-//   behaviourWoodcut runs BEFORE behaviourMine for the same reason — both
-//   produce 'wood' resources but woodcut is targeted and efficient.
-//   behaviourGather and behaviourBuild remain after the specialised variants
-//   so they act as fallbacks for entities with no specific assignment.
+// ── PIPELINE ───────────────────────────────────────────────────
 
 export type BehaviourFn = (ctx: BehaviourContext) => BehaviourResult;
 
@@ -941,9 +873,9 @@ export const PERSON_PIPELINE: BehaviourFn[] = [
   behaviourHunger,
   behaviourSocialize,
   behaviourHunt,
-  behaviourDedicatedFarm,   // Rework 2: brain-assigned farm (agri-shift)
-  behaviourFarm,            // legacy: ad-hoc farm (pre-agri or unassigned)
-  behaviourWoodcut,         // Rework 2: brain-assigned woodcutting
+  behaviourDedicatedFarm,
+  behaviourFarm,
+  behaviourWoodcut,
   behaviourMine,
   behaviourBuild,
   behaviourReturnResources,

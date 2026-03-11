@@ -6,6 +6,12 @@
 //    settlements.tick(s, tickNum, residents) so the Settlement Brain
 //    can run assignTasks() with real EntityState references.
 //  - EntityState.currentTask is initialised to 'idle' on spawn.
+//
+// TILE SHARING:
+//  - Entities no longer block tiles. tile.occupied is only used as a
+//    lightweight hint for findPassableTileNear; movement no longer
+//    rejects occupied tiles. This prevents entities clustering and
+//    jamming each other when near settlements.
 // ============================================================
 
 import { EntityState, EntityRole, createEntity, createGenes, inheritSkills } from './Entity';
@@ -39,11 +45,11 @@ export class EntityManager {
     if (!tile || !TILE_PASSABLE[tile.type]) return null;
 
     const e = createEntity(type, x, y, genes, skills);
-    e.currentTask = 'idle'; // Rework 2: default — brain will assign on next recalc
+    e.currentTask = 'idle';
     this.entities.set(e.id, e);
     this.aliveIds.add(e.id);
     this.grid.insert(e.id, x, y);
-    tile.occupied = true;
+    // tile.occupied intentionally NOT set — tiles are shareable
     this._totalBirths++;
     return e;
   }
@@ -67,13 +73,9 @@ export class EntityManager {
       settlementId: number; homeSettlement: [number,number]|null;
     }> = [];
 
-    // Pass all alive entities + current tick to SettlementManager.
-    // tick() handles food consumption, project cooldowns, level-ups, and
-    // (on NEEDS_RECALC_INTERVAL ticks) the full Settlement Brain pass.
     const allAlive = this.getAlive();
     this.settlements.tick(allAlive, tickNum);
 
-    // Periodically scan for clusters of unhoused entities that can form a new settlement
     if (tickNum % SIM.CLUSTER_CHECK_INTERVAL === 0) {
       this.settlements.checkForNewSettlements(allAlive);
     }
@@ -172,8 +174,6 @@ export class EntityManager {
     for (const id of toRemove) {
       const e = this.entities.get(id);
       if (e) {
-        const tile = this.world.getTile(e.x, e.y);
-        if (tile) tile.occupied = false;
         this.grid.remove(id, e.x, e.y);
         this.entities.delete(id);
         this.aliveIds.delete(id);
@@ -201,12 +201,10 @@ export class EntityManager {
 
   private moveEntity(entity: EntityState, nx: number, ny: number): void {
     const newTile = this.world.getTile(nx, ny);
-    if (!newTile || !TILE_PASSABLE[newTile.type] || newTile.occupied) return;
-    const oldTile = this.world.getTile(entity.x, entity.y);
-    if (oldTile) oldTile.occupied = false;
+    // Tiles are shareable — only block on impassable terrain
+    if (!newTile || !TILE_PASSABLE[newTile.type]) return;
     this.grid.move(entity.id, entity.x, entity.y, nx, ny);
     entity.x = nx; entity.y = ny;
-    newTile.occupied = true;
     entity.energy -= ENTITY.MOVE_ENERGY_COST;
   }
 
@@ -254,10 +252,6 @@ export class EntityManager {
     return dist;
   }
 
-  /**
-   * Returns a breakdown of the current task distribution across all living
-   * settled adults — useful for the debug overlay / inspector.
-   */
   getTaskDistribution(): Record<string, number> {
     const dist: Record<string, number> = {};
     for (const id of this.aliveIds) {

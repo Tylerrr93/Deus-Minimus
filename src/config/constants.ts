@@ -35,7 +35,7 @@ export const SIM = {
 
 export const ENTITY = {
   /** Hunger drained per tick. */
-  HUNGER_RATE:             0.00010,
+  HUNGER_RATE:             0.00018,   // ↑ from 0.00010 — food actually matters now
   /** Minimum energy to attempt reproduction. */
   REPRO_ENERGY_THRESHOLD:  0.45,
   /** Cooldown between births in ticks. 120 ticks = 1 in-game year. */
@@ -51,14 +51,13 @@ export const ENTITY = {
   CLUSTER_MIN_SIZE:        3,
   /**
    * Energy cost per tile moved.
-   * 3× the old 0.0005 so long foraging trips cost meaningfully more.
    */
   MOVE_ENERGY_COST:        0.0015,
 
   // ── Reproduction economic gates ──────────────────────────
 
   /** Settlement foodStorage must exceed (population × REPRO_FOOD_PER_CAP). */
-  REPRO_FOOD_PER_CAP:      2.0,
+  REPRO_FOOD_PER_CAP:      1.5,       // ↓ from 2.0 — slightly easier to reproduce
   /** Nomad entities: minimum energy before they may reproduce. */
   REPRO_NOMAD_ENERGY:      0.70,
 
@@ -68,23 +67,32 @@ export const ENTITY = {
   SHELTER_PER_HOME:        4,
   /** Base shelter capacity before any homes are built (open campsite). */
   SHELTER_BASE:            8,
+
+  // ── Leash ────────────────────────────────────────────────
+
+  /**
+   * Max tile distance a settled entity will wander from their settlement
+   * centre before territorial wander pulls them back.
+   * Reduced from the implicit 20 to keep settlers near home.
+   */
+  LEASH_RADIUS:            12,
 };
 
 export const SETTLEMENT = {
   /** Minimum taxi-distance between any two settlement centres */
   MIN_DISTANCE: 18,
   /** Population needed for level 1 → 2 */
-  LEVEL2_POP:   6,
-  LEVEL2_FOOD:  8,
+  LEVEL2_POP:   5,             // ↓ from 6 — easier first upgrade
+  LEVEL2_FOOD:  6,             // ↓ from 8
   /** Population + homes needed for level 2 → 3 */
   LEVEL3_POP:   12,
   LEVEL3_HOMES: 3,
   MAX_ACTIVE_PROJECTS: 3,
-  BUILD_RATE: 0.010,
+  BUILD_RATE: 0.012,           // ↑ from 0.010 — slightly faster construction
   ROAD_SEARCH_RANGE: 22,
   HOME_SEARCH_RANGE: 6,
-  PROJECT_COOLDOWN: 40,
-  FOOD_PER_POP_TICK: 0.0002,
+  PROJECT_COOLDOWN: 30,        // ↓ from 40 — projects queue up sooner
+  FOOD_PER_POP_TICK: 0.0004,  // ↑ from 0.0002 — settlements consume food faster
   CHILD_ERRAND_RADIUS: 4,
 
   // ── Needs Matrix thresholds ───────────────────────────────
@@ -93,56 +101,25 @@ export const SETTLEMENT = {
    * When Food Need > this value ALL available adult settlers
    * drop their current task and switch to 'gather'.
    */
-  CRISIS_FOOD_NEED:        0.80,
+  CRISIS_FOOD_NEED:        0.75,      // ↓ from 0.80 — crisis kicks in a bit sooner
 
   /**
    * Below this Food Need, gatherers are released to switch to
    * 'wood' or 'build' tasks based on other need scores.
    */
-  IDLE_FOOD_NEED:          0.40,
+  IDLE_FOOD_NEED:          0.30,      // ↓ from 0.40 — workers freed sooner for building
 
   /**
    * Wood need target for active construction.
-   * Wood Need score rises toward 1.0 as woodStorage falls below this.
    */
   WOOD_NEED_BUILD_TARGET:  20,
 
   // ── Agriculture (Agrarian Shift) ──────────────────────────
 
-  /**
-   * Tech points a settlement must accumulate before the Settlement Brain
-   * starts designating farm plots (Agrarian Shift unlocked).
-   */
   AGRI_TECH_THRESHOLD:     40,
-
-  /**
-   * Maximum number of designated farm plots per settlement level.
-   * Total cap = settlement.level × this value.
-   */
   AGRI_FARM_SLOTS_PER_LVL: 3,
-
-  /**
-   * Radius searched around the settlement centre for suitable farm plots
-   * (plains tiles with no existing improvement).
-   */
   AGRI_SEARCH_RADIUS:      14,
-
-  /**
-   * Food regeneration multiplier applied to a designated farm tile's
-   * baseRegenRate. Higher than the old 2.5 — dedicated farming is
-   * meaningfully better than foraging.
-   */
   AGRI_REGEN_MULTIPLIER:   4.0,
-
-  /**
-   * Maximum food a designated farm tile can store (raised above the
-   * wild tile max of 8 so farms act as local food caches).
-   */
   AGRI_FOOD_CAP:           20,
-
-  /**
-   * Food extracted per dedicated harvest action at farming skill 0.
-   * Scales up with the farmer's farming skill bonus.
-   */
   AGRI_HARVEST_AMOUNT:     0.8,
 };
