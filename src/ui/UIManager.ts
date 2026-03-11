@@ -59,6 +59,12 @@ export class UIManager {
     this.popChart       = document.getElementById('pop-chart')!;
     this.infoPanel      = document.getElementById('info-panel')!;
 
+    const stopEvent = (e: Event) => e.stopPropagation();
+    this.infoPanel.addEventListener('mousedown', stopEvent);
+    this.infoPanel.addEventListener('mouseup', stopEvent);
+    this.infoPanel.addEventListener('click', stopEvent);
+    this.infoPanel.addEventListener('wheel', stopEvent, { passive: false });
+
     // Block all pointer events from passing through panel to canvas
     this.infoPanel.addEventListener('pointerdown', e => e.stopPropagation());
     this.infoPanel.addEventListener('pointerup',   e => e.stopPropagation());
