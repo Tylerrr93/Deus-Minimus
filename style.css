@@ -902,3 +902,49 @@ body {
   text-align: right;
   padding-right: 6px;
 }
+
+/* ── Mobile Layout Fixes ── */
+@media (max-width: 768px) {
+  .left-panel, .right-panel {
+    width: 140px;
+    padding: 6px;
+    /* Make panels slightly transparent on mobile to see the map underneath */
+    background: rgba(14, 14, 22, 0.70); 
+    backdrop-filter: blur(2px);
+  }
+  
+  .game-title {
+    font-size: 14px;
+    letter-spacing: 0.1em;
+  }
+  
+  .game-subtitle {
+    font-size: 8px;
+  }
+  
+  .panel-title {
+    font-size: 9px;
+  }
+  
+  /* Scale down HUD and Buttons to fit inside the 140px width */
+  .hud-stage, .hud-year, .hud-stat, .power-btn {
+    font-size: 9px;
+  }
+  
+  .power-icon {
+    font-size: 11px;
+  }
+  
+  .ctrl-btn {
+    font-size: 9px;
+    padding: 4px;
+  }
+  
+  .chart-label, .chart-count {
+    font-size: 8px;
+  }
+  
+  .event-name, .event-year, .event-msg {
+    font-size: 8px;
+  }
+}

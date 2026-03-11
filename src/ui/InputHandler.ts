@@ -13,7 +13,10 @@ export class InputHandler {
   // --- PROPERTIES FOR CYCLING ---
   private lastClickWorld = { x: 0, y: 0 };
   private clickCycleIndex = 0;
-  // ----------------------------------
+
+  // --- PROPERTIES FOR MULTI-TOUCH ZOOM ---
+  private activePointers: Map<number, PointerEvent> = new Map();
+  private lastPinchDistance: number | null = null;
 
   private _hoveredTile: { x: number; y: number } | null = null;
   private _clickedTile: { x: number; y: number } | null = null;
@@ -33,14 +36,12 @@ export class InputHandler {
   }
 
   private bind(): void {
-    // CRITICAL FOR MOBILE: Prevents native browser panning, zooming, and pull-to-refresh
     this.canvas.style.touchAction = 'none';
 
-    // Replace mouse events with pointer events
     this.canvas.addEventListener('pointerdown', this.onPointerDown.bind(this));
     this.canvas.addEventListener('pointermove', this.onPointerMove.bind(this));
     this.canvas.addEventListener('pointerup', this.onPointerUp.bind(this));
-    this.canvas.addEventListener('pointercancel', this.onPointerUp.bind(this)); // Handle touch interruptions
+    this.canvas.addEventListener('pointercancel', this.onPointerUp.bind(this));
     
     this.canvas.addEventListener('wheel', this.onWheel.bind(this), { passive: false });
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
@@ -61,7 +62,6 @@ export class InputHandler {
     };
   }
 
-  // PointerEvent inherits from MouseEvent, so this handles both inputs perfectly
   private getEventPos(e: MouseEvent): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     const scaleX = this.canvas.width / rect.width;
@@ -73,32 +73,73 @@ export class InputHandler {
   }
 
   private onPointerDown(e: PointerEvent): void {
-    if (!e.isPrimary) return; // Only process the first touch/mouse to prevent multi-touch glitches
-    this.canvas.setPointerCapture(e.pointerId); // Ensure drag tracking works even if the finger leaves the canvas bounds
+    this.canvas.setPointerCapture(e.pointerId);
+    this.activePointers.set(e.pointerId, e);
 
-    if (e.button === 0) {
-      this.dragDistance = 0;
-      this.isDragging = true;
-      const pos = this.getEventPos(e);
-      this.dragStart = pos;
-      this.cameraStart = { x: this.camera.x, y: this.camera.y };
-    }
-    if (e.button === 2 || e.button === 1) {
-      this.isDragging = true;
-      const pos = this.getEventPos(e);
-      this.dragStart = pos;
-      this.cameraStart = { x: this.camera.x, y: this.camera.y };
+    // Single touch (or mouse) -> start panning
+    if (this.activePointers.size === 1) {
+      if (e.button === 0 || e.button === 1 || e.button === 2) {
+        this.dragDistance = 0;
+        this.isDragging = true;
+        const pos = this.getEventPos(e);
+        this.dragStart = pos;
+        this.cameraStart = { x: this.camera.x, y: this.camera.y };
+      }
+    } 
+    // Two touches -> cancel panning, prepare for pinch zoom
+    else if (this.activePointers.size === 2) {
+      this.isDragging = false;
+      this.lastPinchDistance = null;
     }
   }
 
   private onPointerMove(e: PointerEvent): void {
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, e);
+    }
+
+    // --- PINCH TO ZOOM LOGIC ---
+    if (this.activePointers.size === 2) {
+      this.dragDistance = 100; // Artificially bump drag distance so letting go doesn't trigger a click
+      
+      const pts = Array.from(this.activePointers.values());
+      const dist = Math.hypot(pts[0].clientX - pts[1].clientX, pts[0].clientY - pts[1].clientY);
+
+      if (this.lastPinchDistance !== null) {
+        const delta = dist - this.lastPinchDistance;
+        const zoomFactor = 1.0 + delta * 0.01; // Adjust this multiplier for pinch speed
+        const newZoom = Math.max(0.5, Math.min(8, this.camera.zoom * zoomFactor));
+
+        // Find the midpoint between the two fingers to zoom into
+        const centerX = (pts[0].clientX + pts[1].clientX) / 2;
+        const centerY = (pts[0].clientY + pts[1].clientY) / 2;
+        
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        const cx = (centerX - rect.left) * scaleX;
+        const cy = (centerY - rect.top) * scaleY;
+
+        const wx = (cx - this.camera.x) / this.camera.zoom;
+        const wy = (cy - this.camera.y) / this.camera.zoom;
+        
+        this.camera.x = cx - wx * newZoom;
+        this.camera.y = cy - wy * newZoom;
+        this.camera.zoom = newZoom;
+      }
+      
+      this.lastPinchDistance = dist;
+      return; // Skip normal panning logic when pinching
+    }
+
+    // --- PANNING & HOVER LOGIC ---
     if (!e.isPrimary) return;
 
     const pos = this.getEventPos(e);
     const world = this.screenToWorld(pos.x, pos.y);
     this._hoveredTile = this.worldToTile(world.x, world.y);
 
-    if (this.isDragging) {
+    if (this.isDragging && this.activePointers.size === 1) {
       const dx = pos.x - this.dragStart.x;
       const dy = pos.y - this.dragStart.y;
       this.dragDistance += Math.hypot(dx - (this.camera.x - this.cameraStart.x),
@@ -109,33 +150,43 @@ export class InputHandler {
   }
 
   private onPointerUp(e: PointerEvent): void {
-    if (!e.isPrimary) return;
     this.canvas.releasePointerCapture(e.pointerId);
+    this.activePointers.delete(e.pointerId);
 
-    if (e.button === 0) {
+    // If we dropped below 2 fingers, reset the pinch tracker
+    if (this.activePointers.size < 2) {
+      this.lastPinchDistance = null;
+    }
+
+    // If the user lifted one finger but left another on the screen, smoothly transition back to panning
+    if (this.activePointers.size === 1) {
+      const remainingPointer = Array.from(this.activePointers.values())[0];
+      this.dragStart = this.getEventPos(remainingPointer);
+      this.cameraStart = { x: this.camera.x, y: this.camera.y };
+      this.isDragging = true;
+      return; 
+    }
+
+    // Click Evaluation
+    if (e.isPrimary && e.button === 0 && this.activePointers.size === 0) {
       this.isDragging = false;
       
-      // Increased tolerance from 5 to 10. Mobile tapping is less precise and 
-      // often generates a few pixels of drag distance natively.
       if (this.dragDistance < 10) {
         const pos = this.getEventPos(e);
         const world = this.screenToWorld(pos.x, pos.y);
         const tile = this.worldToTile(world.x, world.y);
         this._clickedTile = tile;
 
-        // --- CYCLING LOGIC ---
-        // Check if this click is close enough to the last click to count as a cycle
         const distToLast = Math.hypot(world.x - this.lastClickWorld.x, world.y - this.lastClickWorld.y);
         if (distToLast < WORLD.TILE_SIZE * 0.5) {
           this.clickCycleIndex++;
         } else {
           this.clickCycleIndex = 0;
-          this.lastClickWorld = world; // Only update location if we started a new click spot
+          this.lastClickWorld = world;
         }
 
         const selectables: any[] = [];
         
-        // 1. Gather all entities in radius
         if (this.em) {
           const ts = WORLD.TILE_SIZE;
           const pickRadius = ts * 1.2;
@@ -148,15 +199,12 @@ export class InputHandler {
             if (dist < pickRadius) hitEntities.push({ dist, entity: e });
           });
           
-          // Sort entities from closest to furthest
           hitEntities.sort((a, b) => a.dist - b.dist);
           selectables.push(...hitEntities.map(h => h.entity));
         }
 
-        // 2. Add the base tile to the end of the array (bottom layer)
         selectables.push(tile);
 
-        // 3. Select based on current cycle index
         const selected = selectables[this.clickCycleIndex % selectables.length];
 
         if ('id' in selected) {
@@ -164,7 +212,6 @@ export class InputHandler {
         } else {
           this.onTileClick?.(selected as { x: number; y: number });
         }
-        // -------------------------
       }
       this.dragDistance = 0;
     }
