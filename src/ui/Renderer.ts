@@ -60,6 +60,9 @@ export class Renderer {
   private frameCount = 0;
   private animOffset = 0; // continuous float driven by rAF
 
+  // Resource layer toggle - when true, resources render regardless of zoom
+  private showResourcesForced = false;
+
   constructor(
     private readonly canvas:      HTMLCanvasElement,
     private readonly world:       World,
@@ -75,6 +78,10 @@ export class Renderer {
   }
 
   markTilesDirty(): void { this.tilesDirty = true; }
+
+  setShowResourcesForced(v: boolean): void {
+    this.showResourcesForced = v;
+  }
 
   render(
     camera: Camera,
@@ -190,7 +197,8 @@ export class Renderer {
   // ── Resources ─────────────────────────────────────────────
 
   private renderResources(ctx: CanvasRenderingContext2D, camera: Camera): void {
-    if (camera.zoom < 4.0) return;
+    if (camera.zoom < 4.0 && !this.showResourcesForced) return;
+    if (camera.zoom >= 4.0 && this.showResourcesForced === false) return;
     const ts = WORLD.TILE_SIZE;
     const iZ = 1 / camera.zoom;
     const vLeft = -camera.x * iZ, vTop = -camera.y * iZ;
@@ -319,13 +327,12 @@ export class Renderer {
     const iZ      = 1 / camera.zoom;
     const vLeft   = -camera.x * iZ, vTop = -camera.y * iZ;
     const vRight  = vLeft + CANVAS.WIDTH * iZ, vBottom = vTop + CANVAS.HEIGHT * iZ;
-    const pulse   = 1 + Math.sin(this.animOffset * 1.5) * 0.06;
     const showLabels = camera.zoom >= 0.6;
 
     for (const s of this.settlements.getAll()) {
       const px = s.x * ts + ts * 0.5, py = s.y * ts + ts * 0.5;
       if (px < vLeft - ts * 4 || px > vRight + ts * 4 || py < vTop - ts * 4 || py > vBottom + ts * 4) continue;
-      const r   = (ts * 0.55 + (s.level - 1) * ts * 0.15) * pulse;
+      const r   = ts * 0.55 + (s.level - 1) * ts * 0.15;
       const bg  = s.level === 1 ? '#2a1800' : s.level === 2 ? '#1e1400' : '#0e1800';
       const rim = s.level === 1 ? '#c87a22' : s.level === 2 ? '#d4aa44' : '#88cc66';
 
@@ -344,7 +351,7 @@ export class Renderer {
       else this._drawVillageIcon(ctx, px, py, r * 0.52);
 
       if (showLabels) {
-        ctx.globalAlpha = 0.85 + Math.sin(this.animOffset + s.id) * 0.08;
+        ctx.globalAlpha = 0.85;
         const fontSize  = Math.max(4, Math.min(7, ts * 0.75));
         ctx.font        = `${fontSize}px 'Cinzel', serif`;
         ctx.textAlign   = 'center';

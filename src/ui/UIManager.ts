@@ -14,11 +14,25 @@ import { SimulationState } from '../simulation/Simulation';
 import { EntityState } from '../entities/Entity';
 import { Tile } from '../world/Tile';
 import { SettlementManager, Settlement, LEVEL_NAMES } from '../entities/SettlementManager';
+import { SIM } from '../config/constants';
 
 let _notifId = 0;
 interface Notification { id: number; message: string; severity: string; opacity: number; age: number; }
 
 type EntityTab = 'overview' | 'social' | 'skills' | 'genes';
+
+// ── Tick → Year conversion ─────────────────────────────────
+const TICKS_PER_YEAR = SIM.TICKS_PER_YEAR;
+
+function ticksToYears(ticks: number): number {
+  return Math.floor(ticks / TICKS_PER_YEAR);
+}
+
+function ticksToYearsDecimal(ticks: number): string {
+  const years = ticks / TICKS_PER_YEAR;
+  if (years < 1) return `${Math.floor(ticks)} days`;
+  return `${years.toFixed(1)} yrs`;
+}
 
 export class UIManager {
   private hud:            HTMLElement;
@@ -209,28 +223,30 @@ export class UIManager {
     switch (this._entityTab) {
       case 'overview': {
         const energyColor = entity.energy > 0.6 ? '#44cc88' : entity.energy > 0.3 ? '#ccaa22' : '#cc3333';
+        const ageYears    = ticksToYears(entity.age);
+        const maxAgeYears = ticksToYears(entity.maxAge);
         const ageFrac     = entity.age / entity.maxAge;
         const ageColor    = ageFrac > 0.8 ? '#cc3333' : ageFrac > 0.6 ? '#ccaa22' : '#8899cc';
-        this._setEl('ip-patch-task',    this._taskLabel(entity));
+        const yearsLeft   = maxAgeYears - ageYears;
+        this._setEl('ip-patch-action',  this._actionLabel(entity));
+        this._setEl('ip-patch-task',    this._brainTaskLabel(entity));
         this._setEl('ip-patch-energy',  `${Math.round(entity.energy * 100)}%`, energyColor);
         this._setBar('ip-patch-energy-bar', entity.energy * 100, energyColor);
-        this._setEl('ip-patch-age',     `${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}`, ageColor);
+        this._setEl('ip-patch-age',     `${ageYears} yrs`, ageColor);
+        this._setEl('ip-patch-agelife', `~${yearsLeft} left`, yearsLeft < 5 ? '#cc3333' : '#667799');
         this._setBar('ip-patch-age-bar', ageFrac * 100, ageColor);
         const settl   = entity.settlementId >= 0 ? settlements.getById(entity.settlementId) : null;
         this._setEl('ip-patch-home',    settl ? `${settl.name} (Lv${settl.level})` : 'Unhoused', '#aa88ff');
-        const carrying = entity.carryingFood > 0
-          ? `🌾 ${entity.carryingFood.toFixed(1)} food`
-          : entity.carryingResource > 0
-            ? `⛏ ${entity.carryingResource.toFixed(1)} ${entity.carryingResourceType ?? ''}`
-            : 'Nothing';
-        this._setEl('ip-patch-carrying', carrying);
+        this._setEl('ip-patch-carrying', this._carryingLabel(entity));
+        this._setEl('ip-patch-repro',   entity.reproductionCooldown > 0
+          ? `${ticksToYearsDecimal(entity.reproductionCooldown)}` : 'Ready');
         break;
       }
       case 'social': {
+        const thought = this._generateThought(entity, null);
+        this._setEl('ip-patch-thought', thought);
         const s = entity.social;
         const stressColor = s.stressTicks > 40 ? '#cc4444' : s.stressTicks > 20 ? '#ccaa22' : '#667799';
-        const stateEmoji: Record<string, string> = { idle: '—', chatting: '💬', relaxing: '💤', seeking: '👀' };
-        this._setEl('ip-patch-state',   `${stateEmoji[s.socialState] ?? '–'} ${s.socialState}`);
         this._setEl('ip-patch-stress',  `${s.stressTicks}`, stressColor);
         this._setBar('ip-patch-stress-bar', Math.min(100, (s.stressTicks / 120) * 100), stressColor);
         break;
@@ -270,39 +286,160 @@ export class UIManager {
     if (color && el.style.background !== color) el.style.background = color;
   }
 
-  // ── Tab content builders ──────────────────────────────────
+  // ── Label helpers ─────────────────────────────────────────
 
-  private _taskLabel(entity: EntityState): string {
+  /** What the entity is physically doing RIGHT NOW (animation / movement state). */
+  private _actionLabel(entity: EntityState): string {
     if (entity.buildingProjectId !== -1)          return '🔨 Building';
-    if (entity.actionAnim.type === 'gather')       return '🌾 Gathering Food';
-    if (entity.actionAnim.type === 'mine')         return '⛏ Mining Resources';
+    if (entity.actionAnim.type === 'gather')       return '🌾 Foraging';
+    if (entity.actionAnim.type === 'mine')         return '⛏ Mining';
     if (entity.actionAnim.type === 'farm')         return '🪴 Farming';
-    if (entity.memory.returning)                   return '⛺ Returning Home';
+    if (entity.actionAnim.type === 'build')        return '🔨 Constructing';
+    if (entity.memory.returning)                   return '⛺ Heading Home';
     if (entity.social.socialState === 'chatting')  return '💬 Chatting';
-    if (entity.social.socialState === 'relaxing')  return '💤 Relaxing';
-    if (entity.energy < 0.45)                      return '🍖 Seeking Food';
-    return 'Wandering / Idle';
+    if (entity.social.socialState === 'relaxing')  return '💤 Resting';
+    if (entity.energy < 0.35)                      return '🍖 Desperately Hungry';
+    if (entity.energy < 0.55)                      return '🍖 Looking for Food';
+    if (entity.isChild)                            return '🐾 Exploring';
+    return '🚶 Wandering';
   }
+
+  /** The role the Settlement Brain has assigned this entity. */
+  private _brainTaskLabel(entity: EntityState): string {
+    if (entity.settlementId === -1) return 'Nomad — no assignment';
+    if (!entity.currentTask || entity.currentTask === 'idle') return 'Unassigned';
+    const labels: Record<string, string> = {
+      gather: '🌾 Gather Food',
+      wood:   '🪵 Cut Wood',
+      build:  '🔨 Build',
+      farm:   '🌱 Farm',
+      mine:   '⛏ Mine',
+      trade:  '⚖ Trade',
+    };
+    return labels[entity.currentTask] ?? entity.currentTask;
+  }
+
+  /** Everything the entity is physically carrying. */
+  private _carryingLabel(entity: EntityState): string {
+    const parts: string[] = [];
+    if (entity.carryingFood > 0) {
+      parts.push(`🌾 ${entity.carryingFood.toFixed(1)} food`);
+    }
+    if (entity.carryingResource > 0 && entity.carryingResourceType) {
+      const icons: Record<string, string> = { wood: '🌳', stone: '⛏', iron: '⚪' };
+      const icon = icons[entity.carryingResourceType] ?? '⛏';
+      parts.push(`${icon} ${entity.carryingResource.toFixed(1)} ${entity.carryingResourceType}`);
+    }
+    return parts.length > 0 ? parts.join('  ') : 'Nothing';
+  }
+
+  /**
+   * Generates a short contextual "thought" for the entity based on
+   * their current conditions — replaces the old bland social state display.
+   */
+  private _generateThought(entity: EntityState, _settl: Settlement | null): string {
+    const s = entity.social;
+    const e = entity.energy;
+    const stress = s.stressTicks;
+    const hasPartner = s.partnerIds.length > 0;
+    const hasAffair  = s.affairPartnerIds.length > 0;
+    const hasFriends = s.friendIds.length > 0;
+    const alone      = s.ticksAloneFromPartners > 100;
+    const task       = entity.currentTask;
+    const returning  = entity.memory.returning;
+
+    // Crisis states first
+    if (e <= 0.15) return `"I… can't go on much longer."`;
+    if (e <= 0.25) return `"Must find something to eat. Anything."`;
+    if (e <= 0.40) return `"My stomach aches. Food. Now."`;
+
+    // High stress
+    if (stress > 80) return `"Everything is falling apart."`;
+    if (stress > 50) {
+      if (hasPartner && alone) return `"Why haven't they come back?"`;
+      return `"I can't shake this feeling of dread."`;
+    }
+
+    // Task-focused thoughts
+    if (entity.buildingProjectId !== -1)      return `"One plank at a time. It'll stand."`;
+    if (entity.actionAnim.type === 'farm')    return `"The soil is good here. It'll yield."`;
+    if (entity.actionAnim.type === 'mine')    return `"Stone by stone."`;
+    if (entity.actionAnim.type === 'gather')  return `"A bit more and I'll head back."`;
+    if (returning && entity.carryingFood > 0) return `"Heavy load. They'll eat well tonight."`;
+    if (returning)                            return `"Time to bring this back."`;
+
+    // Social states
+    if (s.socialState === 'chatting') {
+      if (hasFriends) return `"Good to see a familiar face."`;
+      return `"Maybe we can be friends."`;
+    }
+    if (s.socialState === 'relaxing') {
+      if (e > 0.85) return `"A moment's peace. I've earned it."`;
+      return `"Just need to catch my breath."`;
+    }
+
+    // Relationship thoughts
+    if (hasAffair && hasPartner)       return `"This is getting complicated."`;
+    if (hasAffair)                     return `"My heart is pulled in two directions."`;
+    if (s.seekCooldown === 0 && !hasPartner && !entity.isChild) {
+      return `"I wonder if I'll find someone."`;
+    }
+    if (alone && hasPartner)           return `"I miss them."`;
+    if (hasPartner && e > 0.7 && !alone) return `"Content. For now."`;
+
+    // Assignment-based
+    if (task === 'gather')  return `"Always hungry mouths to fill."`;
+    if (task === 'wood')    return `"The forest gives what we need."`;
+    if (task === 'build')   return `"This place deserves better walls."`;
+    if (task === 'farm')    return `"Patience. The harvest will come."`;
+    if (task === 'mine')    return `"Somewhere down here, iron."`;
+    if (task === 'trade')   return `"A fair deal benefits everyone."`;
+
+    // Default calm thoughts
+    if (entity.isChild)     return `"The world is so big."`;
+    if (e > 0.85 && hasFriends && hasPartner) return `"Life is… not so bad."`;
+    if (e > 0.7)            return `"What next, I wonder."`;
+    return `"Keeping on."`;
+  }
+
+  // ── Tab content builders ──────────────────────────────────
 
   private _buildOverviewTab(entity: EntityState, settl: Settlement | null): string {
     const energyPct   = Math.round(entity.energy * 100);
     const energyColor = entity.energy > 0.6 ? '#44cc88' : entity.energy > 0.3 ? '#ccaa22' : '#cc3333';
     const ageFrac     = entity.age / entity.maxAge;
     const ageColor    = ageFrac > 0.8 ? '#cc3333' : ageFrac > 0.6 ? '#ccaa22' : '#8899cc';
+    const ageYears    = ticksToYears(entity.age);
+    const maxAgeYears = ticksToYears(entity.maxAge);
+    const yearsLeft   = maxAgeYears - ageYears;
     const settlName   = settl ? `${settl.name} (Lv${settl.level})` : 'Unhoused';
-    const carrying    = entity.carryingFood > 0
-      ? `🌾 ${entity.carryingFood.toFixed(1)} food`
-      : entity.carryingResource > 0
-        ? `⛏ ${entity.carryingResource.toFixed(1)} ${entity.carryingResourceType ?? ''}`
-        : 'Nothing';
+    const carrying    = this._carryingLabel(entity);
+    const reproReady  = entity.reproductionCooldown <= 0;
+    const reproLabel  = reproReady ? 'Ready' : ticksToYearsDecimal(entity.reproductionCooldown);
+    const reproColor  = reproReady ? '#44cc88' : '#667799';
+
+    // Housing context
+    let housingNote = '';
+    if (settl) {
+      const { ENTITY: _E, SETTLEMENT: _S } = { ENTITY: { SHELTER_BASE: 8, SHELTER_PER_HOME: 4 }, SETTLEMENT: {} };
+      const cap = 8 + settl.homesBuilt * 4;
+      if (settl.population >= cap) {
+        housingNote = `<div class="ip-warn-row">⚠ Settlement at housing capacity (${cap})</div>`;
+      }
+    }
 
     return `
       <div class="ip-stat-row">
-        <span class="ip-stat-label">Task</span>
-        <span class="ip-stat-val task-val" data-pid="ip-patch-task">${this._taskLabel(entity)}</span>
+        <span class="ip-stat-label">Doing</span>
+        <span class="ip-stat-val task-val" data-pid="ip-patch-action">${this._actionLabel(entity)}</span>
       </div>
+      <div class="ip-stat-row">
+        <span class="ip-stat-label">Assigned</span>
+        <span class="ip-stat-val" style="color:#88aacc" data-pid="ip-patch-task">${this._brainTaskLabel(entity)}</span>
+      </div>
+      <div class="ip-divider"></div>
       <div class="ip-stat-row bar-row">
-        <span class="ip-stat-label">Energy</span>
+        <span class="ip-stat-label">Vitality</span>
         <div class="ip-stat-bar-wrap">
           <div class="stat-bar-bg"><div class="stat-bar" data-bar="ip-patch-energy-bar" style="width:${energyPct}%;background:${energyColor}"></div></div>
           <span class="ip-stat-val bar-num" data-pid="ip-patch-energy" style="color:${energyColor}">${energyPct}%</span>
@@ -312,8 +449,12 @@ export class UIManager {
         <span class="ip-stat-label">Age</span>
         <div class="ip-stat-bar-wrap">
           <div class="stat-bar-bg"><div class="stat-bar" data-bar="ip-patch-age-bar" style="width:${Math.round(ageFrac * 100)}%;background:${ageColor}"></div></div>
-          <span class="ip-stat-val bar-num" data-pid="ip-patch-age" style="color:${ageColor}">${Math.floor(entity.age)} / ${Math.floor(entity.maxAge)}</span>
+          <span class="ip-stat-val bar-num" data-pid="ip-patch-age" style="color:${ageColor}">${ageYears} yrs</span>
         </div>
+      </div>
+      <div class="ip-stat-row">
+        <span class="ip-stat-label">Lifespan</span>
+        <span class="ip-stat-val" data-pid="ip-patch-agelife" style="color:${yearsLeft < 5 ? '#cc3333' : '#667799'}">~${yearsLeft} left of ${maxAgeYears}</span>
       </div>
       <div class="ip-divider"></div>
       <div class="ip-stat-row">
@@ -328,18 +469,25 @@ export class UIManager {
         <span class="ip-stat-label">Carrying</span>
         <span class="ip-stat-val" data-pid="ip-patch-carrying">${carrying}</span>
       </div>
+      <div class="ip-stat-row">
+        <span class="ip-stat-label">Reproduct.</span>
+        <span class="ip-stat-val" data-pid="ip-patch-repro" style="color:${reproColor}">${reproLabel}</span>
+      </div>
       ${entity.isChild ? `<div class="ip-stat-row"><span class="ip-stat-label">Parent</span><span class="ip-stat-val">${entity.parentId >= 0 ? '#' + entity.parentId : '—'}</span></div>` : ''}
+      ${housingNote}
     `;
   }
 
   private _buildSocialTab(entity: EntityState): string {
     const s           = entity.social;
+    const settl       = null; // passed separately in patch
     const orientIcons: Record<string, string> = { straight: '⇄', gay: '⇆', bi: '⇋' };
     const orientIcon  = s.orientation ? orientIcons[s.orientation] : '–';
     const stressPct   = Math.min(100, (s.stressTicks / 120) * 100);
     const stressColor = s.stressTicks > 40 ? '#cc4444' : s.stressTicks > 20 ? '#ccaa22' : '#667799';
-    const stateEmoji: Record<string, string> = { idle: '—', chatting: '💬', relaxing: '💤', seeking: '👀' };
     const roleLabel   = s.followingId !== null ? '↩ Following' : s.partnerIds.length > 0 ? '↪ Leading' : '—';
+
+    const thought = this._generateThought(entity, settl);
 
     const partnerHtml = s.partnerIds.length > 0
       ? s.partnerIds.map(id => `<span class="id-chip partner">#${id}</span>`).join('')
@@ -351,7 +499,19 @@ export class UIManager {
       ? `<span class="id-chip friend">${s.friendIds.length} known</span>`
       : '<span class="ip-stat-empty">none</span>';
 
+    // Alone-from-partner ticker
+    let lonelinessNote = '';
+    if (s.partnerIds.length > 0 && s.ticksAloneFromPartners > 80) {
+      const ticksAway = s.ticksAloneFromPartners;
+      lonelinessNote = `<div class="ip-warn-row">💔 Apart from partner for ${ticksToYearsDecimal(ticksAway)}</div>`;
+    }
+
     return `
+      <div class="ip-thought-box">
+        <span class="ip-thought-label">Thoughts</span>
+        <span class="ip-thought-text" data-pid="ip-patch-thought">${thought}</span>
+      </div>
+      <div class="ip-divider"></div>
       <div class="ip-social-toggles">
         <button id="btn-partner-lines" class="social-toggle-btn${this._showPartnerLines ? ' active-bond' : ''}">❤ Show Bonds</button>
         <button id="btn-friend-lines"  class="social-toggle-btn${this._showFriendLines  ? ' active-friend' : ''}">★ Show Friends</button>
@@ -364,10 +524,6 @@ export class UIManager {
       <div class="ip-stat-row">
         <span class="ip-stat-label">❤ Rel. Style</span>
         <span class="ip-stat-val">${s.relationshipStyle ?? (entity.isChild ? '–' : '?')}</span>
-      </div>
-      <div class="ip-stat-row">
-        <span class="ip-stat-label">State</span>
-        <span class="ip-stat-val" data-pid="ip-patch-state">${stateEmoji[s.socialState] ?? '–'} ${s.socialState}</span>
       </div>
       <div class="ip-stat-row">
         <span class="ip-stat-label">Role</span>
@@ -386,6 +542,7 @@ export class UIManager {
         <span class="ip-stat-label">Friends</span>
         <div class="chip-list">${friendHtml}</div>
       </div>
+      ${lonelinessNote}
       <div class="ip-divider"></div>
       <div class="ip-stat-row bar-row">
         <span class="ip-stat-label">Stress</span>
@@ -407,21 +564,46 @@ export class UIManager {
       hunting: '#ff8833', gathering: '#88dd66', farming: '#44cc88',
       building: '#cc8844', crafting: '#dd6633', trading: '#aa88ff', study: '#44ddff',
     };
+    // Unlock thresholds — what each skill unlocks at certain levels
+    const skillUnlocks: Record<string, [number, string][]> = {
+      hunting:   [[5, 'longer hunt range'], [20, 'rich kills']],
+      gathering: [[5, 'wider scan'], [15, 'rich forage']],
+      farming:   [[2, 'can farm'], [10, 'fast harvest']],
+      building:  [[2, 'can build'], [15, 'fast builds']],
+      crafting:  [[3, 'can mine'], [20, 'rich yields']],
+      trading:   [[5, 'can trade'], [15, 'efficient routes']],
+      study:     [[1, 'drips tech pts'], [10, 'fast drip']],
+    };
+
     const topSkill = Object.entries(sk).reduce((best, cur) => (cur[1] as number) > (best[1] as number) ? cur : best, ['', 0]);
     const dominant = (topSkill[1] as number) >= 5
       ? `<div class="ip-badge" style="border-color:${skillColors[topSkill[0]] ?? '#8899cc'};color:${skillColors[topSkill[0]] ?? '#8899cc'}">◈ Dominant: ${topSkill[0].toUpperCase()}</div>`
       : `<div class="ip-badge" style="border-color:#445566;color:#667788">◈ No dominant skill yet</div>`;
 
     const rows = Object.entries(sk).map(([key, val]) => {
-      const pct   = Math.min(100, val as number);
-      const color = skillColors[key] ?? '#8899cc';
-      const icon  = skillIcons[key]  ?? '◈';
-      const isTop = key === topSkill[0] && (val as number) >= 5;
+      const pct    = Math.min(100, val as number);
+      const color  = skillColors[key] ?? '#8899cc';
+      const icon   = skillIcons[key]  ?? '◈';
+      const isTop  = key === topSkill[0] && (val as number) >= 5;
+      const unlocks = skillUnlocks[key] ?? [];
+      // Find the highest unlocked tier
+      const unlocked = unlocks.filter(([thresh]) => (val as number) >= thresh);
+      const nextUp   = unlocks.find(([thresh]) => (val as number) < thresh);
+      const unlockedHtml = unlocked.length > 0
+        ? `<span class="skill-unlock">${unlocked[unlocked.length - 1][1]}</span>`
+        : nextUp
+          ? `<span class="skill-locked">@${nextUp[0]}: ${nextUp[1]}</span>`
+          : '';
       return `
         <div class="skill-row${isTop ? ' top-skill' : ''}">
           <span class="skill-icon">${icon}</span>
-          <span class="skill-name">${key}</span>
-          <div class="skill-bar-bg"><div class="skill-bar" data-bar="ip-patch-skillbar-${key}" style="width:${pct}%;background:${color}"></div></div>
+          <div class="skill-main">
+            <div class="skill-name-row">
+              <span class="skill-name">${key}</span>
+              ${unlockedHtml}
+            </div>
+            <div class="skill-bar-bg"><div class="skill-bar" data-bar="ip-patch-skillbar-${key}" style="width:${pct}%;background:${color}"></div></div>
+          </div>
           <span class="skill-val" data-pid="ip-patch-skill-${key}" style="color:${color}">${Math.floor(val as number)}</span>
         </div>`;
     }).join('');
@@ -446,17 +628,28 @@ export class UIManager {
       creativity:   'Farming unlock, new behaviours',
       ambition:     'Building motivation, leadership',
     };
+    // Qualitative labels
+    const geneRating = (val: number): string => {
+      if (val >= 0.80) return 'Exceptional';
+      if (val >= 0.65) return 'High';
+      if (val >= 0.45) return 'Average';
+      if (val >= 0.30) return 'Low';
+      return 'Weak';
+    };
 
     return Object.entries(entity.genes).map(([key, val]) => {
       const pct   = Math.round((val as number) * 100);
       const color = geneColors[key] ?? '#8899cc';
       const icon  = geneIcons[key]  ?? '⬡';
       const desc  = geneDesc[key]   ?? '';
+      const rating = geneRating(val as number);
+      const ratingColor = (val as number) >= 0.65 ? '#44cc88' : (val as number) >= 0.45 ? '#ccaa22' : '#cc6644';
       return `
         <div class="gene-card">
           <div class="gene-card-header">
             <span class="gene-card-icon">${icon}</span>
             <span class="gene-card-name">${key.charAt(0).toUpperCase() + key.slice(1)}</span>
+            <span class="gene-card-rating" style="color:${ratingColor}">${rating}</span>
             <span class="gene-card-val" data-pid="ip-patch-gene-${key}" style="color:${color}">${pct}</span>
           </div>
           <div class="gene-card-bar-bg">
@@ -523,6 +716,29 @@ export class UIManager {
     const activeProjects   = settlement.projects.filter(p => !p.complete);
     const completedCount   = settlement.projects.filter(p => p.complete).length;
 
+    // Housing capacity
+    const housingCap    = 8 + settlement.homesBuilt * 4;
+    const housingColor  = settlement.population >= housingCap ? '#cc4444' : '#44cc88';
+    const housingLabel  = `${settlement.population} / ${housingCap}`;
+
+    // Needs matrix
+    const n = settlement.needs;
+    const foodNeedPct  = Math.round(n.food * 100);
+    const woodNeedPct  = Math.round(n.wood * 100);
+    const foodNeedColor = n.food > 0.8 ? '#cc3333' : n.food > 0.5 ? '#ccaa22' : '#44cc88';
+    const woodNeedColor = n.wood > 0.7 ? '#ccaa22' : '#667799';
+
+    // Agri status
+    const agriHtml = settlement.agriUnlocked
+      ? `<div class="ip-stat-row">
+           <span class="ip-stat-label">🌱 Agri</span>
+           <span class="ip-stat-val" style="color:#44cc88">${settlement.farmPlots.length} plots active</span>
+         </div>`
+      : `<div class="ip-stat-row">
+           <span class="ip-stat-label">🌱 Agri</span>
+           <span class="ip-stat-val" style="color:#667799">Not yet unlocked (${Math.floor(settlement.techPoints)}/${40} tech)</span>
+         </div>`;
+
     const projectsHtml = activeProjects.length > 0
       ? activeProjects.map(p => {
           const pct       = Math.round(p.progress * 100);
@@ -545,21 +761,25 @@ export class UIManager {
           <span class="ip-settle-icon" style="color:${color}">${settlement.level === 1 ? '⛺' : settlement.level === 2 ? '🏠' : '🏘'}</span>
           <div class="ip-header-text">
             <span class="ip-title" style="color:${color}">${settlement.name}</span>
-            <span class="ip-subtitle">${levelName} · Age <span data-pid="s-age">${settlement.age}</span></span>
+            <span class="ip-subtitle">${levelName} · Age <span data-pid="s-age">${ticksToYears(settlement.age)} yrs</span></span>
           </div>
         </div>
         <button class="ip-close" id="ip-close-btn">✕</button>
       </div>
       <div class="ip-settle-body">
         <div class="settle-stat-grid">
-          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-pop">${settlement.population}</span><span class="settle-stat-label">Population</span></div>
+          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-pop">${settlement.population}</span><span class="settle-stat-label">People</span></div>
           <div class="settle-stat"><span class="settle-stat-val" data-pid="s-homes">${settlement.homesBuilt}</span><span class="settle-stat-label">Homes</span></div>
           <div class="settle-stat"><span class="settle-stat-val" data-pid="s-roads">${settlement.roadsBuilt}</span><span class="settle-stat-label">Roads</span></div>
-          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-tech">${Math.floor(settlement.techPoints)}</span><span class="settle-stat-label">Tech Pts</span></div>
+          <div class="settle-stat"><span class="settle-stat-val" data-pid="s-tech">${Math.floor(settlement.techPoints)}</span><span class="settle-stat-label">Tech</span></div>
         </div>
         <div class="ip-divider"></div>
+        <div class="ip-stat-row">
+          <span class="ip-stat-label">🏠 Housing</span>
+          <span class="ip-stat-val" data-pid="s-housing" style="color:${housingColor}">${housingLabel}</span>
+        </div>
         <div class="ip-stat-row bar-row">
-          <span class="ip-stat-label">Food</span>
+          <span class="ip-stat-label">🌾 Food</span>
           <div class="ip-stat-bar-wrap">
             <div class="stat-bar-bg"><div class="stat-bar" data-bar="s-food-bar" style="width:${foodPct}%;background:${foodColor}"></div></div>
             <span class="ip-stat-val bar-num" data-pid="s-food" style="color:${foodColor}">${Math.floor(settlement.foodStorage)}/${settlement.maxFoodStorage}</span>
@@ -574,7 +794,25 @@ export class UIManager {
           <span class="ip-stat-val" data-pid="s-stone">${Math.floor(settlement.stoneStorage)}</span>
         </div>
         <div class="ip-divider"></div>
-        <div class="settle-section-title">Active Projects (${activeProjects.length})</div>
+        <div class="settle-section-title">Needs</div>
+        <div class="ip-stat-row bar-row">
+          <span class="ip-stat-label">Food Need</span>
+          <div class="ip-stat-bar-wrap">
+            <div class="stat-bar-bg"><div class="stat-bar" data-bar="s-foodneed-bar" style="width:${foodNeedPct}%;background:${foodNeedColor}"></div></div>
+            <span class="ip-stat-val bar-num" data-pid="s-foodneed" style="color:${foodNeedColor}">${foodNeedPct}%</span>
+          </div>
+        </div>
+        <div class="ip-stat-row bar-row">
+          <span class="ip-stat-label">Wood Need</span>
+          <div class="ip-stat-bar-wrap">
+            <div class="stat-bar-bg"><div class="stat-bar" data-bar="s-woodneed-bar" style="width:${woodNeedPct}%;background:${woodNeedColor}"></div></div>
+            <span class="ip-stat-val bar-num" data-pid="s-woodneed" style="color:${woodNeedColor}">${woodNeedPct}%</span>
+          </div>
+        </div>
+        <div class="ip-divider"></div>
+        ${agriHtml}
+        <div class="ip-divider"></div>
+        <div class="settle-section-title">Projects (${activeProjects.length} active)</div>
         ${projectsHtml}
         ${completedCount > 0 ? `<div class="ip-stat-row" style="margin-top:4px"><span class="ip-stat-label">Completed</span><span class="ip-stat-val" style="color:#667799">${completedCount} done</span></div>` : ''}
         <div class="ip-divider"></div>
@@ -588,17 +826,30 @@ export class UIManager {
   }
 
   private _patchSettlementPanel(settlement: Settlement): void {
-    const foodPct   = Math.round((settlement.foodStorage / settlement.maxFoodStorage) * 100);
-    const foodColor = foodPct > 50 ? '#44aa44' : foodPct > 25 ? '#aaaa22' : '#aa2222';
-    this._setEl('s-pop',   `${settlement.population}`);
-    this._setEl('s-homes', `${settlement.homesBuilt}`);
-    this._setEl('s-roads', `${settlement.roadsBuilt}`);
-    this._setEl('s-tech',  `${Math.floor(settlement.techPoints)}`);
-    this._setEl('s-age',   `${settlement.age}`);
-    this._setEl('s-food',  `${Math.floor(settlement.foodStorage)}/${settlement.maxFoodStorage}`, foodColor);
-    this._setEl('s-wood',  `${Math.floor(settlement.woodStorage)}`);
-    this._setEl('s-stone', `${Math.floor(settlement.stoneStorage)}`);
-    this._setBar('s-food-bar', foodPct, foodColor);
+    const foodPct    = Math.round((settlement.foodStorage / settlement.maxFoodStorage) * 100);
+    const foodColor  = foodPct > 50 ? '#44aa44' : foodPct > 25 ? '#aaaa22' : '#aa2222';
+    const housingCap = 8 + settlement.homesBuilt * 4;
+    const housingColor = settlement.population >= housingCap ? '#cc4444' : '#44cc88';
+    const n = settlement.needs;
+    const foodNeedPct   = Math.round(n.food * 100);
+    const woodNeedPct   = Math.round(n.wood * 100);
+    const foodNeedColor = n.food > 0.8 ? '#cc3333' : n.food > 0.5 ? '#ccaa22' : '#44cc88';
+    const woodNeedColor = n.wood > 0.7 ? '#ccaa22' : '#667799';
+
+    this._setEl('s-pop',      `${settlement.population}`);
+    this._setEl('s-homes',    `${settlement.homesBuilt}`);
+    this._setEl('s-roads',    `${settlement.roadsBuilt}`);
+    this._setEl('s-tech',     `${Math.floor(settlement.techPoints)}`);
+    this._setEl('s-age',      `${ticksToYears(settlement.age)} yrs`);
+    this._setEl('s-food',     `${Math.floor(settlement.foodStorage)}/${settlement.maxFoodStorage}`, foodColor);
+    this._setEl('s-wood',     `${Math.floor(settlement.woodStorage)}`);
+    this._setEl('s-stone',    `${Math.floor(settlement.stoneStorage)}`);
+    this._setEl('s-housing',  `${settlement.population} / ${housingCap}`, housingColor);
+    this._setEl('s-foodneed', `${foodNeedPct}%`, foodNeedColor);
+    this._setEl('s-woodneed', `${woodNeedPct}%`, woodNeedColor);
+    this._setBar('s-food-bar',     foodPct,     foodColor);
+    this._setBar('s-foodneed-bar', foodNeedPct, foodNeedColor);
+    this._setBar('s-woodneed-bar', woodNeedPct, woodNeedColor);
   }
 
   // ── Tile / improvement panel ──────────────────────────────
@@ -646,6 +897,7 @@ export class UIManager {
       </div>
       <div class="ip-settle-body">
         <div class="ip-flavour">A humble structure of wood and mud. Shelter from the wild, built by willing hands.</div>
+        <div class="ip-stat-row"><span class="ip-stat-label">Shelters</span><span class="ip-stat-val" style="color:#44cc88">up to 4 people</span></div>
         <div class="ip-divider"></div>
         ${this._tileBaseStats(tile)}
       </div>`;
@@ -656,19 +908,23 @@ export class UIManager {
   private _showFarmPanel(tile: Tile): void {
     const food    = tile.resources.find(r => r.type === 'food');
     const foodPct = food ? Math.round((food.amount / food.max) * 100) : 0;
+    const isAgri  = food && food.max >= 20; // AGRI_FOOD_CAP — boosted by dedicated farmer
+    const regenLabel = food
+      ? (isAgri ? `${(food.regenRate * 100).toFixed(3)}/tick (agrarian)` : `${(food.regenRate * 100).toFixed(3)}/tick`)
+      : '—';
     this.infoPanel.innerHTML = `
       <div class="ip-header improvement-header">
         <div class="ip-header-left">
           <span class="ip-settle-icon" style="color:#44cc88">🪴</span>
           <div class="ip-header-text">
-            <span class="ip-title" style="color:#88dd66">Cultivated Farm</span>
+            <span class="ip-title" style="color:#88dd66">${isAgri ? 'Agrarian Farm' : 'Cultivated Farm'}</span>
             <span class="ip-subtitle">Agriculture · ${tile.x}, ${tile.y}</span>
           </div>
         </div>
         <button class="ip-close" id="ip-close-btn">✕</button>
       </div>
       <div class="ip-settle-body">
-        <div class="ip-flavour">Rows cut by careful hands. Regen rate doubled by cultivation.</div>
+        <div class="ip-flavour">${isAgri ? 'A dedicated plot managed by a skilled farmer. Yields far exceed wild foraging.' : 'Rows cut by careful hands. Regen rate boosted by cultivation.'}</div>
         <div class="ip-divider"></div>
         ${food ? `
           <div class="ip-stat-row bar-row">
@@ -679,9 +935,10 @@ export class UIManager {
             </div>
           </div>
           <div class="ip-stat-row">
-            <span class="ip-stat-label">Regen Rate</span>
-            <span class="ip-stat-val" style="color:#44cc88">×2.5 base</span>
+            <span class="ip-stat-label">Regen</span>
+            <span class="ip-stat-val" style="color:#44cc88">${regenLabel}</span>
           </div>
+          ${food.regenCrashTicks > 0 ? `<div class="ip-warn-row">⚠ Soil depleted — recovering (${food.regenCrashTicks} ticks)</div>` : ''}
           <div class="ip-divider"></div>` : ''}
         ${this._tileBaseStats(tile)}
       </div>`;
@@ -707,13 +964,21 @@ export class UIManager {
           const pct      = Math.round((r.amount / r.max) * 100);
           const resColor = r.type === 'food' ? '#88dd66' : r.type === 'wood' ? '#6a9a4a'
             : r.type === 'stone' ? '#9a9a9a' : r.type === 'iron' ? '#aa7755' : '#aa88ff';
+          const crashed  = r.regenCrashTicks > 0;
+          const regenStr = r.baseRegenRate > 0
+            ? (crashed ? `⚠ depleted (${r.regenCrashTicks}t)` : `+${(r.regenRate * 100).toFixed(2)}/tick`)
+            : 'non-renewable';
           return `
             <div class="ip-stat-row bar-row">
               <span class="ip-stat-label">${r.type}</span>
               <div class="ip-stat-bar-wrap">
-                <div class="stat-bar-bg"><div class="stat-bar" style="width:${pct}%;background:${resColor}"></div></div>
+                <div class="stat-bar-bg"><div class="stat-bar" style="width:${pct}%;background:${resColor}${crashed ? '88' : ''}"></div></div>
                 <span class="ip-stat-val bar-num" style="color:${resColor}">${Math.floor(r.amount)}/${r.max}</span>
               </div>
+            </div>
+            <div class="ip-stat-row" style="padding-top:0">
+              <span class="ip-stat-label" style="font-size:9px;color:#445566">regen</span>
+              <span class="ip-stat-val" style="font-size:10px;color:${crashed ? '#cc8844' : '#445577'}">${regenStr}</span>
             </div>`;
         }).join('')
       : '<div class="ip-stat-empty">No resources</div>';

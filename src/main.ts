@@ -25,6 +25,7 @@ class Game {
   private selectedEntity: EntityState | null = null;
   private showPartnerLines = false;
   private showFriendLines  = false;
+  private showResourcesForced = false;
 
   constructor() {
     const canvas    = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -108,6 +109,13 @@ class Game {
   }
 
   private bindControls(): void {
+    document.getElementById('btn-resources')?.addEventListener('click', () => {
+      this.showResourcesForced = !this.showResourcesForced;
+      this.renderer.setShowResourcesForced(this.showResourcesForced);
+      document.getElementById('btn-resources')!.textContent = 
+        this.showResourcesForced ? '🌿 Resources: On' : '🌿 Resources: Off';
+    });
+
     document.getElementById('btn-pause')?.addEventListener('click', () => {
       this.isPaused = !this.isPaused;
       document.getElementById('btn-pause')!.textContent = this.isPaused ? '▶ Resume' : '⏸ Pause';
