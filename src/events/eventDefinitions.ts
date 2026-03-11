@@ -76,7 +76,7 @@ export const GAME_EVENTS: GameEvent[] = [
       // Iron-rich impact zones
       for (let i = 0; i < 4; i++) {
         const tile = world.getRandomPassableTile();
-        if (tile) tile.resources.push({ type: 'iron', amount: 10, max: 20, regenRate: 0 });
+        if (tile) tile.resources.push({ type: 'iron', amount: 10, max: 20, baseRegenRate: 0, regenRate: 0, regenCrashTicks: 0 });
       }
       return `A volcanic eruption killed ${killed} people and scattered iron across the land.`;
     },
@@ -104,7 +104,7 @@ export const GAME_EVENTS: GameEvent[] = [
       const hits = Math.floor(3 + Math.random() * 5);
       for (let i = 0; i < hits; i++) {
         const tile = world.getRandomPassableTile();
-        if (tile) tile.resources.push({ type: 'iron', amount: 12, max: 25, regenRate: 0 });
+        if (tile) tile.resources.push({ type: 'iron', amount: 12, max: 25, baseRegenRate: 0, regenRate: 0, regenCrashTicks: 0 });
       }
       return `${hits} meteors struck the earth, leaving iron-rich craters behind.`;
     },
