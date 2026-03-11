@@ -1,4 +1,4 @@
-import { Tile, TileType, TileResource, TILE_PASSABLE } from './Tile';
+import { Tile, TileType, TileResource, TILE_PASSABLE, REGEN_CRASH_TICKS, REGEN_CRASH_FRACTION } from './Tile';
 import { SimplexNoise } from './SimplexNoise';
 import { WORLD } from '../config/constants';
 
@@ -68,21 +68,35 @@ export class World {
 
   private generateResources(type: TileType, x: number, y: number): TileResource[] {
     const resources: TileResource[] = [];
-    const rng = Math.sin(x * 127.1 + y * 311.7) * 0.5 + 0.5;
+    const rng  = Math.sin(x * 127.1 + y * 311.7) * 0.5 + 0.5;
     const rng2 = Math.sin(x * 269.5 + y * 183.3) * 0.5 + 0.5;
 
+    const makeRes = (
+      resType: TileResource['type'],
+      amount: number,
+      max: number,
+      baseRegenRate: number,
+    ): TileResource => ({
+      type: resType,
+      amount,
+      max,
+      baseRegenRate,
+      regenRate: baseRegenRate,
+      regenCrashTicks: 0,
+    });
+
     if (type === 'plains' || type === 'forest') {
-      resources.push({ type: 'food', amount: 2 + rng * 3, max: 8, regenRate: 0.01 });
+      resources.push(makeRes('food', 2 + rng * 3, 8, 0.010));
     }
     if (type === 'forest') {
-      resources.push({ type: 'wood', amount: 5 + rng2 * 5, max: 15, regenRate: 0.005 });
+      resources.push(makeRes('wood', 5 + rng2 * 5, 15, 0.005));
     }
     if (type === 'mountain') {
-      if (rng > 0.4) resources.push({ type: 'stone', amount: 10 + rng * 10, max: 30, regenRate: 0 });
-      if (rng2 > 0.6) resources.push({ type: 'iron', amount: 3 + rng * 5, max: 20, regenRate: 0 });
+      if (rng  > 0.4) resources.push(makeRes('stone', 10 + rng  * 10, 30, 0));
+      if (rng2 > 0.6) resources.push(makeRes('iron',   3 + rng  *  5, 20, 0));
     }
     if (type === 'plains' && rng > 0.85) {
-      resources.push({ type: 'coal', amount: 2 + rng2 * 4, max: 20, regenRate: 0 });
+      resources.push(makeRes('coal', 2 + rng2 * 4, 20, 0));
     }
     return resources;
   }
@@ -127,11 +141,18 @@ export class World {
   }
 
   tick(): void {
-    // Regen resources
     for (let y = 0; y < this.rows; y++) {
       for (let x = 0; x < this.cols; x++) {
         const tile = this.tiles[y][x];
         for (const res of tile.resources) {
+          // Tick down crash cooldown and restore regen rate when it expires
+          if (res.regenCrashTicks > 0) {
+            res.regenCrashTicks--;
+            if (res.regenCrashTicks === 0) {
+              // Full recovery
+              res.regenRate = res.baseRegenRate;
+            }
+          }
           if (res.amount < res.max) {
             res.amount = Math.min(res.max, res.amount + res.regenRate);
           }
@@ -140,13 +161,27 @@ export class World {
     }
   }
 
+  /**
+   * Extract `amount` of `type` from tile (x, y).
+   * If food hits 0 for the first time, enter ecological crash state:
+   * regenRate drops to 10% of base for REGEN_CRASH_TICKS ticks.
+   */
   extractResource(x: number, y: number, type: string, amount: number): number {
     const tile = this.getTile(x, y);
     if (!tile) return 0;
     const res = tile.resources.find(r => r.type === type);
     if (!res) return 0;
+
+    const wasAboveZero = res.amount > 0;
     const extracted = Math.min(res.amount, amount);
     res.amount -= extracted;
+
+    // Trigger ecological crash when food tile is stripped to 0
+    if (type === 'food' && wasAboveZero && res.amount <= 0 && res.regenCrashTicks === 0) {
+      res.regenRate = res.baseRegenRate * REGEN_CRASH_FRACTION;
+      res.regenCrashTicks = REGEN_CRASH_TICKS;
+    }
+
     return extracted;
   }
 
@@ -161,6 +196,6 @@ export class World {
     return null;
   }
 
-  get width(): number { return this.cols * this.tileSize; }
+  get width():  number { return this.cols * this.tileSize; }
   get height(): number { return this.rows * this.tileSize; }
 }

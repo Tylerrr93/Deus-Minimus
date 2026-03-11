@@ -157,6 +157,7 @@ export interface EntityState {
   parentId: number;
   actionAnim:        ActionAnim;
   buildingProjectId: number;
+  currentTask: import('./SettlementManager').EntityTask;
 }
 
 // ── ID counter ────────────────────────────────────────────────
@@ -285,5 +286,6 @@ export function createEntity(
     parentId: -1,
     actionAnim: { type: null, progress: 0, duration: 800, startMs: 0 },
     buildingProjectId: -1,
+    currentTask: 'idle'
   };
 }

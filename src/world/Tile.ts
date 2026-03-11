@@ -11,7 +11,16 @@ export interface TileResource {
   type: 'food' | 'stone' | 'wood' | 'iron' | 'coal';
   amount: number;
   max: number;
+  /** Base regeneration rate when healthy */
+  baseRegenRate: number;
+  /** Current effective regen rate (reduced when crashed) */
   regenRate: number;
+  /**
+   * Ticks remaining in "ecological crash" state.
+   * When a tile is stripped to 0 food, regenRate drops to 10% of base
+   * for REGEN_CRASH_TICKS ticks, then recovers.
+   */
+  regenCrashTicks: number;
 }
 
 export interface Tile {
@@ -27,6 +36,12 @@ export interface Tile {
   claimed: number;
   improvement?: 'farm' | 'mine' | 'settlement' | 'dirt_road' | 'rough_home';
 }
+
+/** How many ticks a tile stays in crashed regen state after being stripped. */
+export const REGEN_CRASH_TICKS = 600;
+
+/** Fraction of base regen rate while a tile is in crash state. */
+export const REGEN_CRASH_FRACTION = 0.10;
 
 export const TILE_COLORS: Record<TileType, string> = {
   deep_water:    '#0a1a3a',

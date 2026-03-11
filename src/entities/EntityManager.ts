@@ -1,5 +1,11 @@
 // ============================================================
 // ENTITY MANAGER
+//
+// REWORK 2 CHANGES:
+//  - tick() now collects residents per settlement and passes them to
+//    settlements.tick(s, tickNum, residents) so the Settlement Brain
+//    can run assignTasks() with real EntityState references.
+//  - EntityState.currentTask is initialised to 'idle' on spawn.
 // ============================================================
 
 import { EntityState, EntityRole, createEntity, createGenes, inheritSkills } from './Entity';
@@ -7,7 +13,7 @@ import { BEHAVIOUR_PIPELINES, BehaviourContext, BehaviourFn } from './Behaviours
 import { World } from '../world/World';
 import { TILE_PASSABLE } from '../world/Tile';
 import { SpatialGrid } from './SpatialGrid';
-import { ENTITY, SETTLEMENT, WORLD } from '../config/constants';
+import { ENTITY, SETTLEMENT, WORLD, SIM } from '../config/constants';
 import { SettlementManager } from './SettlementManager';
 
 export class EntityManager {
@@ -26,13 +32,14 @@ export class EntityManager {
     this.grid = new SpatialGrid(WORLD.COLS, WORLD.ROWS, 8);
   }
 
-  // ── Spawning ─────────────────────────────────────────────
+  // ── Spawning ───────────────────────────────────────────────
 
   spawn(type: EntityRole, x: number, y: number, genes?: any, skills?: any): EntityState | null {
     const tile = this.world.getTile(x, y);
     if (!tile || !TILE_PASSABLE[tile.type]) return null;
 
     const e = createEntity(type, x, y, genes, skills);
+    e.currentTask = 'idle'; // Rework 2: default — brain will assign on next recalc
     this.entities.set(e.id, e);
     this.aliveIds.add(e.id);
     this.grid.insert(e.id, x, y);
@@ -49,7 +56,7 @@ export class EntityManager {
     }
   }
 
-  // ── Tick ─────────────────────────────────────────────────
+  // ── Tick ───────────────────────────────────────────────────
 
   tick(tickNum: number): void {
     const nowMs = performance.now();
@@ -60,11 +67,22 @@ export class EntityManager {
       settlementId: number; homeSettlement: [number,number]|null;
     }> = [];
 
+    // Pass all alive entities + current tick to SettlementManager.
+    // tick() handles food consumption, project cooldowns, level-ups, and
+    // (on NEEDS_RECALC_INTERVAL ticks) the full Settlement Brain pass.
+    const allAlive = this.getAlive();
+    this.settlements.tick(allAlive, tickNum);
+
+    // Periodically scan for clusters of unhoused entities that can form a new settlement
+    if (tickNum % SIM.CLUSTER_CHECK_INTERVAL === 0) {
+      this.settlements.checkForNewSettlements(allAlive);
+    }
+
+    // ── Entity behaviour loop ─────────────────────────────────
     for (const id of this.aliveIds) {
       const entity = this.entities.get(id);
       if (!entity || !entity.alive) continue;
 
-      // All entities share the single universal pipeline
       const pipeline: BehaviourFn[] = BEHAVIOUR_PIPELINES[entity.type] ?? [];
 
       const nearIds = this.grid.query(entity.x, entity.y, ENTITY.VISION_RANGE);
@@ -124,6 +142,14 @@ export class EntityManager {
           this.settlements.depositFood(entity.settlementId, result.depositFood);
         }
 
+        if (result.depositResource && entity.settlementId !== -1) {
+          this.settlements.depositResource(
+            entity.settlementId,
+            result.depositResource.type,
+            result.depositResource.amount,
+          );
+        }
+
         if (result.workOnProject) {
           didBuild = true;
           const { projectId, tileX, tileY } = result.workOnProject;
@@ -137,7 +163,6 @@ export class EntityManager {
         }
       }
 
-      // Clear building project if entity didn't actively build this tick
       if (!didBuild) {
         entity.buildingProjectId = -1;
       }
@@ -160,8 +185,8 @@ export class EntityManager {
     for (const s of toSpawn) {
       const born = this.spawn('wanderer', s.x, s.y, s.genes, s.skills);
       if (born) {
-        born.isChild  = true;
-        born.parentId = s.parentId;
+        born.isChild   = true;
+        born.parentId  = s.parentId;
         born.settlementId          = s.settlementId;
         born.memory.homeSettlement = s.homeSettlement;
         if (born.settlementId !== -1) {
@@ -172,7 +197,7 @@ export class EntityManager {
     }
   }
 
-  // ── Movement ─────────────────────────────────────────────
+  // ── Movement ───────────────────────────────────────────────
 
   private moveEntity(entity: EntityState, nx: number, ny: number): void {
     const newTile = this.world.getTile(nx, ny);
@@ -182,10 +207,10 @@ export class EntityManager {
     this.grid.move(entity.id, entity.x, entity.y, nx, ny);
     entity.x = nx; entity.y = ny;
     newTile.occupied = true;
-    entity.energy -= 0.0005;
+    entity.energy -= ENTITY.MOVE_ENERGY_COST;
   }
 
-  // ── Settlement assignment ────────────────────────────────
+  // ── Settlement assignment ──────────────────────────────────
 
   assignToSettlement(entity: EntityState, settlementId: number): void {
     entity.settlementId = settlementId;
@@ -196,7 +221,7 @@ export class EntityManager {
     }
   }
 
-  // ── Read API ─────────────────────────────────────────────
+  // ── Read API ───────────────────────────────────────────────
 
   forEachAlive(cb: (e: EntityState) => void): void {
     for (const id of this.aliveIds) {
@@ -225,6 +250,21 @@ export class EntityManager {
     for (const id of this.aliveIds) {
       const e = this.entities.get(id);
       if (e) dist[e.type] = (dist[e.type] ?? 0) + 1;
+    }
+    return dist;
+  }
+
+  /**
+   * Returns a breakdown of the current task distribution across all living
+   * settled adults — useful for the debug overlay / inspector.
+   */
+  getTaskDistribution(): Record<string, number> {
+    const dist: Record<string, number> = {};
+    for (const id of this.aliveIds) {
+      const e = this.entities.get(id);
+      if (!e || e.isChild || e.settlementId === -1) continue;
+      const t = e.currentTask ?? 'idle';
+      dist[t] = (dist[t] ?? 0) + 1;
     }
     return dist;
   }

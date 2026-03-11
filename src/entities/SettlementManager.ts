@@ -2,14 +2,32 @@
 // SETTLEMENT MANAGER
 // Settlements form dynamically when entities cluster.
 // Tracks shared inventory and manages building projects.
+//
+// REWORK 2 ADDITIONS (on top of original):
+//  - NeedsMatrix: Food / Wood / Tech need scores recalculated
+//    every SIM.NEEDS_RECALC_INTERVAL ticks via tickNeeds().
+//  - Dynamic Task Assignment: assignTasks() sets entity.currentTask.
+//  - Agrarian Shift: farm plot designation once techPoints threshold met.
+//  - EntityTask type, NeedsMatrix interface, agriUnlocked / farmPlots /
+//    foodCrisisTicks / needs fields added to Settlement.
 // ============================================================
 
 import { World } from '../world/World';
 import { TILE_PASSABLE } from '../world/Tile';
-import { ENTITY, SETTLEMENT } from '../config/constants';
+import { ENTITY, SETTLEMENT, SIM } from '../config/constants';
 import { EntityState } from './Entity';
 
-// ── Building Projects ─────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────
+
+/** Task assigned by the Settlement Brain. Checked by task-gated behaviours. */
+export type EntityTask =
+  | 'idle'
+  | 'gather'
+  | 'wood'
+  | 'build'
+  | 'farm'
+  | 'mine'
+  | 'trade';
 
 export type ProjectType = 'dirt_road' | 'rough_home';
 
@@ -28,8 +46,6 @@ export interface BuildingProject {
   complete:     boolean;
 }
 
-// ── Settlement ────────────────────────────────────────────────
-
 export type SettlementLevel = 1 | 2 | 3;
 
 export const LEVEL_NAMES: Record<SettlementLevel, string> = {
@@ -37,6 +53,12 @@ export const LEVEL_NAMES: Record<SettlementLevel, string> = {
   2: 'Hamlet',
   3: 'Village',
 };
+
+export interface NeedsMatrix {
+  food: number;  // 0 = full, 1 = empty
+  wood: number;  // 0 = plenty, 1 = critically needed
+  tech: number;  // 0 = no pressure, 1 = blocked
+}
 
 export interface Settlement {
   id:           number;
@@ -49,15 +71,23 @@ export interface Settlement {
   maxFoodStorage: number;
   woodStorage:  number;
   stoneStorage: number;
-  /** Accumulated technology points driving research and era progression */
   techPoints:   number;
   age:          number;
   homesBuilt:   number;
   roadsBuilt:   number;
   projects:     BuildingProject[];
   projectCooldown: number;
-  /** Set to true when level just changed, for notification */
   justLeveledUp: boolean;
+
+  // ── Rework 2 fields ────────────────────────────────────────
+  /** Current need scores, updated every NEEDS_RECALC_INTERVAL ticks. */
+  needs:           NeedsMatrix;
+  /** True once techPoints >= AGRI_TECH_THRESHOLD. */
+  agriUnlocked:    boolean;
+  /** Tile coords of Brain-designated farm plots. */
+  farmPlots:       [number, number][];
+  /** Consecutive ticks food need has been in crisis (used for granary queuing). */
+  foodCrisisTicks: number;
 }
 
 // ── Name pool ─────────────────────────────────────────────────
@@ -84,13 +114,8 @@ export class SettlementManager {
 
   // ── Dynamic formation ─────────────────────────────────────
 
-  /**
-   * Scans unhoused entities for clusters large enough to form a settlement.
-   * Returns newly founded settlements (callers can push notifications).
-   */
   checkForNewSettlements(entities: EntityState[]): Settlement[] {
     const created: Settlement[] = [];
-
     const unhoused = entities.filter(e => e.alive && !e.isChild && e.settlementId === -1);
     if (unhoused.length < ENTITY.CLUSTER_MIN_SIZE) return created;
 
@@ -103,10 +128,8 @@ export class SettlementManager {
         !assigned.has(e.id) &&
         Math.abs(e.x - anchor.x) + Math.abs(e.y - anchor.y) <= ENTITY.CLUSTER_RADIUS,
       );
-
       if (cluster.length < ENTITY.CLUSTER_MIN_SIZE) continue;
 
-      // Find centroid
       const cx = Math.round(cluster.reduce((s, e) => s + e.x, 0) / cluster.length);
       const cy = Math.round(cluster.reduce((s, e) => s + e.y, 0) / cluster.length);
 
@@ -121,17 +144,14 @@ export class SettlementManager {
       const s = this._create(tile.x, tile.y);
       if (!s) continue;
 
-      // Assign up to 12 cluster members; give them a food head-start
       for (const e of cluster.slice(0, 12)) {
-        e.settlementId            = s.id;
-        e.memory.homeSettlement   = [s.x, s.y];
+        e.settlementId          = s.id;
+        e.memory.homeSettlement = [s.x, s.y];
         s.population++;
         assigned.add(e.id);
       }
 
-      // Seed the new settlement with some food so residents don't immediately starve
       s.foodStorage = Math.min(s.maxFoodStorage, 10);
-
       created.push(s);
     }
 
@@ -150,41 +170,51 @@ export class SettlementManager {
       id:   _nextId++,
       name: NAMES[_nameIdx++ % NAMES.length],
       x, y,
-      level: 1,
-      population:     0,
-      foodStorage:    10,
-      maxFoodStorage: 30,
-      woodStorage:    0,
-      stoneStorage:   0,
-      techPoints:     0,
-      age:            0,
-      homesBuilt:     0,
-      roadsBuilt:     0,
-      projects:       [],
+      level:           1,
+      population:      0,
+      foodStorage:     10,
+      maxFoodStorage:  30,
+      woodStorage:     0,
+      stoneStorage:    0,
+      techPoints:      0,
+      age:             0,
+      homesBuilt:      0,
+      roadsBuilt:      0,
+      projects:        [],
       projectCooldown: 0,
-      justLeveledUp:  false,
+      justLeveledUp:   false,
+      needs:           { food: 0.5, wood: 0.5, tech: 0.5 },
+      agriUnlocked:    false,
+      farmPlots:       [],
+      foodCrisisTicks: 0,
     };
 
     this.settlements.set(s.id, s);
-
     const t = this.world.getTile(x, y);
     if (t) t.improvement = 'settlement';
-
     return s;
   }
 
   // ── Per-tick update ───────────────────────────────────────
 
-  tick(entities: EntityState[]): void {
+  tick(entities: EntityState[], tickNum: number = 0): void {
     for (const s of this.settlements.values()) {
       s.age++;
       s.justLeveledUp = false;
 
-      // Recount living adult population
       s.population = entities.filter(e => e.alive && !e.isChild && e.settlementId === s.id).length;
-
-      // Consume food — rate is already very low per tick, scaled to new hunger rate
       s.foodStorage = Math.max(0, s.foodStorage - s.population * SETTLEMENT.FOOD_PER_POP_TICK);
+
+      // Tech drip from scholars
+      const scholars = entities.filter(
+        e => e.alive && !e.isChild && e.settlementId === s.id && e.type === 'scholar',
+      );
+      s.techPoints += scholars.length * 0.002;
+
+      // Unlock agrarian shift
+      if (!s.agriUnlocked && s.techPoints >= SETTLEMENT.AGRI_TECH_THRESHOLD) {
+        s.agriUnlocked = true;
+      }
 
       this._checkLevelUp(s);
 
@@ -194,11 +224,18 @@ export class SettlementManager {
         this._generateProjects(s);
       }
 
-      // Evict dead workers from projects
       for (const p of s.projects) {
         if (!p.complete) {
           p.workerIds = p.workerIds.filter(id => entities.find(e => e.id === id && e.alive));
         }
+      }
+
+      // Settlement Brain — runs on the recalc interval
+      if (tickNum > 0 && tickNum % SIM.NEEDS_RECALC_INTERVAL === 0) {
+        const residents = entities.filter(e => e.alive && e.settlementId === s.id);
+        this.tickNeeds(s);
+        this.assignTasks(s, residents);
+        if (s.agriUnlocked) this._designateFarmPlots(s);
       }
     }
   }
@@ -206,8 +243,8 @@ export class SettlementManager {
   private _checkLevelUp(s: Settlement): void {
     const prev = s.level;
     if (s.level === 1 &&
-        s.population    >= SETTLEMENT.LEVEL2_POP &&
-        s.foodStorage   >= SETTLEMENT.LEVEL2_FOOD) {
+        s.population  >= SETTLEMENT.LEVEL2_POP &&
+        s.foodStorage >= SETTLEMENT.LEVEL2_FOOD) {
       s.level          = 2;
       s.maxFoodStorage = 50;
     }
@@ -224,11 +261,106 @@ export class SettlementManager {
     }
   }
 
+  // ── Needs Matrix (Rework 2) ───────────────────────────────
+
+  tickNeeds(s: Settlement): void {
+    s.needs.food = 1.0 - Math.min(1, s.foodStorage / s.maxFoodStorage);
+
+    if (s.needs.food >= SETTLEMENT.CRISIS_FOOD_NEED) {
+      s.foodCrisisTicks++;
+    } else {
+      s.foodCrisisTicks = 0;
+    }
+
+    const activeProjects = s.projects.filter(p => !p.complete);
+    s.needs.wood = activeProjects.length > 0
+      ? 1.0 - Math.min(1, s.woodStorage / SETTLEMENT.WOOD_NEED_BUILD_TARGET)
+      : 0.1;
+
+    s.needs.tech = 0.4;
+  }
+
+  // ── Dynamic Task Assignment (Rework 2) ───────────────────
+
+  assignTasks(s: Settlement, residents: EntityState[]): void {
+    const adults = residents.filter(e => !e.isChild && e.energy > 0.15);
+    if (adults.length === 0) return;
+
+    const { food, wood } = s.needs;
+
+    if (food >= SETTLEMENT.CRISIS_FOOD_NEED) {
+      for (const e of adults) e.currentTask = 'gather';
+      return;
+    }
+
+    for (const e of adults) {
+      if (e.energy < 0.35) e.currentTask = 'gather';
+    }
+
+    const free = adults.filter(e => e.energy >= 0.35);
+
+    if (food >= SETTLEMENT.IDLE_FOOD_NEED) {
+      const gathererTarget = Math.ceil(free.length * 0.6);
+      free.forEach((e, i) => {
+        const hasProject = s.projects.some(p => !p.complete);
+        e.currentTask = i < gathererTarget
+          ? 'gather'
+          : hasProject ? 'build' : (wood > 0.5 ? 'wood' : 'gather');
+      });
+      return;
+    }
+
+    const sorted = [...free].sort((a, b) => b.skills.farming - a.skills.farming);
+    let farmerSlots     = s.agriUnlocked && s.farmPlots.length > 0
+      ? Math.min(s.farmPlots.length, Math.floor(free.length * 0.5))
+      : 0;
+    let woodcutterSlots = wood >= 0.5 ? Math.max(1, Math.floor(free.length * 0.25)) : 0;
+    let builderSlots    = s.projects.some(p => !p.complete)
+      ? Math.max(1, Math.floor(free.length * 0.20))
+      : 0;
+
+    sorted.forEach((e, i) => {
+      if      (i < farmerSlots)                                  e.currentTask = 'farm';
+      else if (i < farmerSlots + woodcutterSlots)                e.currentTask = 'wood';
+      else if (i < farmerSlots + woodcutterSlots + builderSlots) e.currentTask = 'build';
+      else                                                       e.currentTask = food < 0.2 ? 'idle' : 'gather';
+    });
+  }
+
+  // ── Agrarian Shift (Rework 2) ─────────────────────────────
+
+  private _designateFarmPlots(s: Settlement): void {
+    const maxPlots = s.level * SETTLEMENT.AGRI_FARM_SLOTS_PER_LVL;
+    if (s.farmPlots.length >= maxPlots) return;
+
+    const R = SETTLEMENT.AGRI_SEARCH_RADIUS;
+    const candidates: [number, number, number][] = [];
+
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        const tx = s.x + dx, ty = s.y + dy;
+        const tile = this.world.getTile(tx, ty);
+        if (!tile || tile.type !== 'plains' || tile.improvement) continue;
+        if (s.farmPlots.some(([px, py]) => px === tx && py === ty)) continue;
+        candidates.push([tx, ty, Math.abs(dx) + Math.abs(dy)]);
+      }
+    }
+
+    candidates.sort((a, b) => a[2] - b[2]);
+
+    for (const [tx, ty] of candidates) {
+      if (s.farmPlots.length >= maxPlots) break;
+      const tile = this.world.getTile(tx, ty);
+      if (!tile) continue;
+      tile.improvement = 'farm';
+      s.farmPlots.push([tx, ty]);
+    }
+  }
+
   // ── Project generation ────────────────────────────────────
 
   private _generateProjects(s: Settlement): void {
     if (s.level < 2) return;
-
     const active = s.projects.filter(p => !p.complete);
     if (active.length >= SETTLEMENT.MAX_ACTIVE_PROJECTS) return;
 
@@ -287,9 +419,7 @@ export class SettlementManager {
              t.improvement !== 'dirt_road' &&
              t.improvement !== 'settlement';
     });
-
     if (viable.length < 3) return null;
-
     return this._makeProject(s.id, 'dirt_road', viable.slice(0, 20), 4);
   }
 
@@ -443,11 +573,11 @@ export class SettlementManager {
     if (type === 'stone') s.stoneStorage = Math.min(200, s.stoneStorage + amount);
   }
 
-  // ── Queries ──────────────────────────────────────────────
+  // ── Queries ───────────────────────────────────────────────
 
-  getAll(): Settlement[]                        { return [...this.settlements.values()]; }
-  getById(id: number): Settlement | null        { return this.settlements.get(id) ?? null; }
-  getCount(): number                            { return this.settlements.size; }
+  getAll(): Settlement[]                 { return [...this.settlements.values()]; }
+  getById(id: number): Settlement | null { return this.settlements.get(id) ?? null; }
+  getCount(): number                     { return this.settlements.size; }
 
   getAllProjects(): BuildingProject[] {
     const out: BuildingProject[] = [];
@@ -463,5 +593,12 @@ export class SettlementManager {
       else                    d.village++;
     }
     return d;
+  }
+
+  isTooClose(x: number, y: number): boolean {
+    for (const s of this.settlements.values()) {
+      if (Math.abs(s.x - x) + Math.abs(s.y - y) < SETTLEMENT.MIN_DISTANCE) return true;
+    }
+    return false;
   }
 }
