@@ -45,6 +45,28 @@ export class InputHandler {
     window.addEventListener('keyup', e => this.keys.delete(e.key));
   }
 
+  /**
+   * Restricts the camera position so the map can never be completely dragged off-screen.
+   * Allows dragging until the edge of the map reaches the center of the canvas.
+   */
+  private clampCamera(): void {
+    const scaledWorldWidth = WORLD.COLS * WORLD.TILE_SIZE * this.camera.zoom;
+    const scaledWorldHeight = WORLD.ROWS * WORLD.TILE_SIZE * this.camera.zoom;
+    
+    // Half the screen width/height is the padding we allow past the map edge
+    const marginX = CANVAS.WIDTH / 2;
+    const marginY = CANVAS.HEIGHT / 2;
+
+    const minX = -scaledWorldWidth + marginX;
+    const maxX = marginX;
+    
+    const minY = -scaledWorldHeight + marginY;
+    const maxY = marginY;
+
+    this.camera.x = Math.max(minX, Math.min(maxX, this.camera.x));
+    this.camera.y = Math.max(minY, Math.min(maxY, this.camera.y));
+  }
+
   private screenToWorld(sx: number, sy: number): { x: number; y: number } {
     const wx = (sx - this.camera.x) / this.camera.zoom;
     const wy = (sy - this.camera.y) / this.camera.zoom;
@@ -138,6 +160,8 @@ export class InputHandler {
           this.camera.x = centerPos.x - wx * newZoom;
           this.camera.y = centerPos.y - wy * newZoom;
           this.camera.zoom = newZoom;
+          
+          this.clampCamera(); // Clamp after pinch zooming
         }
       }
       this.initialPinchDistance = dist;
@@ -151,6 +175,8 @@ export class InputHandler {
       );
       this.camera.x = this.cameraStart.x + dx;
       this.camera.y = this.cameraStart.y + dy;
+      
+      this.clampCamera(); // Clamp after dragging
     }
   }
 
@@ -208,14 +234,20 @@ export class InputHandler {
     this.camera.x = pos.x - wx * newZoom;
     this.camera.y = pos.y - wy * newZoom;
     this.camera.zoom = newZoom;
+    
+    this.clampCamera(); // Clamp after scroll zooming
   }
 
   processKeys(dt: number): void {
     const speed = 5 / this.camera.zoom;
-    if (this.keys.has('ArrowLeft') || this.keys.has('a')) this.camera.x += speed * 8;
-    if (this.keys.has('ArrowRight') || this.keys.has('d')) this.camera.x -= speed * 8;
-    if (this.keys.has('ArrowUp') || this.keys.has('w')) this.camera.y += speed * 8;
-    if (this.keys.has('ArrowDown') || this.keys.has('s')) this.camera.y -= speed * 8;
+    let moved = false;
+    
+    if (this.keys.has('ArrowLeft') || this.keys.has('a')) { this.camera.x += speed * 8; moved = true; }
+    if (this.keys.has('ArrowRight') || this.keys.has('d')) { this.camera.x -= speed * 8; moved = true; }
+    if (this.keys.has('ArrowUp') || this.keys.has('w')) { this.camera.y += speed * 8; moved = true; }
+    if (this.keys.has('ArrowDown') || this.keys.has('s')) { this.camera.y -= speed * 8; moved = true; }
+    
+    if (moved) this.clampCamera(); // Clamp after keyboard movement
   }
 
   get hoveredTile(): { x: number; y: number } | null { return this._hoveredTile; }
@@ -224,5 +256,6 @@ export class InputHandler {
   centerCamera(worldX: number, worldY: number): void {
     this.camera.x = CANVAS.WIDTH / 2 - worldX * this.camera.zoom;
     this.camera.y = CANVAS.HEIGHT / 2 - worldY * this.camera.zoom;
+    this.clampCamera(); // Clamp after centering on an entity
   }
 }

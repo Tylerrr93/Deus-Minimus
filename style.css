@@ -166,6 +166,15 @@ body {
 .ctrl-btn.danger:hover { background: rgba(255,68,68,0.15); }
 
 /* ── Activity log ── */
+#activity-log {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
 .log-entry {
   padding: 4px 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -231,7 +240,7 @@ body {
 
 /* ── Help button ── */
 #btn-help {
-  position: absolute; bottom: 12px; right: 228px;
+  position: absolute; bottom: 12px; right: 12px;
   width: 28px; height: 28px; border-radius: 50%;
   background: rgba(14,14,22,0.8);
   border: 1px solid var(--panel-border);
@@ -249,26 +258,26 @@ body {
 
 #info-panel {
   position: absolute;
-  bottom: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 430px;              /* ↑ was 380px — wider to fit larger text */
-  max-height: 420px;         /* ↑ was 380px */
+  top: 20%;
+  transform: translateY(-50%);
+  right: 1%;
+  width: 250px;
+  max-height: 90vh; /* Prevents it from being taller than the screen */
 
   background: rgba(8, 8, 18, 0.97);
   border: 1px solid var(--panel-border);
-  border-top: 2px solid var(--accent);
-  border-radius: 0 0 5px 5px;
+  border-right: none; /* Keeps it flush against the right edge */
+  border-radius: 6px 0 0 6px; /* Rounds the top-left and bottom-left corners */
 
   font-family: var(--font-mono);
-  font-size: 12px;           /* ↑ was 10px */
+  font-size: 12px;
   color: var(--text);
 
   pointer-events: auto;
   z-index: 30;
 
   backdrop-filter: blur(6px);
-  box-shadow: 0 -4px 32px rgba(136,85,255,0.18), 0 8px 24px rgba(0,0,0,0.6);
+  box-shadow: -4px 0 32px rgba(136,85,255,0.18), 0 8px 24px rgba(0,0,0,0.6);
 
   display: none;
   flex-direction: column;
