@@ -10,7 +10,7 @@ export class InputHandler {
   private cameraStart = { x: 0, y: 0 };
   private dragDistance = 0;
 
-  // --- NEW PROPERTIES FOR CYCLING ---
+  // --- PROPERTIES FOR CYCLING ---
   private lastClickWorld = { x: 0, y: 0 };
   private clickCycleIndex = 0;
   // ----------------------------------
@@ -33,9 +33,15 @@ export class InputHandler {
   }
 
   private bind(): void {
-    this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this));
-    this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
-    this.canvas.addEventListener('mouseup', this.onMouseUp.bind(this));
+    // CRITICAL FOR MOBILE: Prevents native browser panning, zooming, and pull-to-refresh
+    this.canvas.style.touchAction = 'none';
+
+    // Replace mouse events with pointer events
+    this.canvas.addEventListener('pointerdown', this.onPointerDown.bind(this));
+    this.canvas.addEventListener('pointermove', this.onPointerMove.bind(this));
+    this.canvas.addEventListener('pointerup', this.onPointerUp.bind(this));
+    this.canvas.addEventListener('pointercancel', this.onPointerUp.bind(this)); // Handle touch interruptions
+    
     this.canvas.addEventListener('wheel', this.onWheel.bind(this), { passive: false });
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
     window.addEventListener('keydown', e => this.keys.add(e.key));
@@ -55,6 +61,7 @@ export class InputHandler {
     };
   }
 
+  // PointerEvent inherits from MouseEvent, so this handles both inputs perfectly
   private getEventPos(e: MouseEvent): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     const scaleX = this.canvas.width / rect.width;
@@ -65,7 +72,10 @@ export class InputHandler {
     };
   }
 
-  private onMouseDown(e: MouseEvent): void {
+  private onPointerDown(e: PointerEvent): void {
+    if (!e.isPrimary) return; // Only process the first touch/mouse to prevent multi-touch glitches
+    this.canvas.setPointerCapture(e.pointerId); // Ensure drag tracking works even if the finger leaves the canvas bounds
+
     if (e.button === 0) {
       this.dragDistance = 0;
       this.isDragging = true;
@@ -81,7 +91,9 @@ export class InputHandler {
     }
   }
 
-  private onMouseMove(e: MouseEvent): void {
+  private onPointerMove(e: PointerEvent): void {
+    if (!e.isPrimary) return;
+
     const pos = this.getEventPos(e);
     const world = this.screenToWorld(pos.x, pos.y);
     this._hoveredTile = this.worldToTile(world.x, world.y);
@@ -96,16 +108,22 @@ export class InputHandler {
     }
   }
 
-  private onMouseUp(e: MouseEvent): void {
+  private onPointerUp(e: PointerEvent): void {
+    if (!e.isPrimary) return;
+    this.canvas.releasePointerCapture(e.pointerId);
+
     if (e.button === 0) {
       this.isDragging = false;
-      if (this.dragDistance < 5) {
+      
+      // Increased tolerance from 5 to 10. Mobile tapping is less precise and 
+      // often generates a few pixels of drag distance natively.
+      if (this.dragDistance < 10) {
         const pos = this.getEventPos(e);
         const world = this.screenToWorld(pos.x, pos.y);
         const tile = this.worldToTile(world.x, world.y);
         this._clickedTile = tile;
 
-        // --- NEW CYCLING LOGIC ---
+        // --- CYCLING LOGIC ---
         // Check if this click is close enough to the last click to count as a cycle
         const distToLast = Math.hypot(world.x - this.lastClickWorld.x, world.y - this.lastClickWorld.y);
         if (distToLast < WORLD.TILE_SIZE * 0.5) {
