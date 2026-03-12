@@ -35,7 +35,7 @@ export const SIM = {
 
 export const ENTITY = {
   /** Hunger drained per tick. */
-  HUNGER_RATE:             0.00018,   // ↑ from 0.00010 — food actually matters now
+  HUNGER_RATE:             0.00018,   
   /** Minimum energy to attempt reproduction. */
   REPRO_ENERGY_THRESHOLD:  0.45,
   /** Cooldown between births in ticks. 120 ticks = 1 in-game year. */

@@ -2,14 +2,6 @@
 // SETTLEMENT MANAGER
 // Settlements form dynamically when entities cluster.
 // Tracks shared inventory and manages building projects.
-//
-// REWORK 2 ADDITIONS (on top of original):
-//  - NeedsMatrix: Food / Wood / Tech need scores recalculated
-//    every SIM.NEEDS_RECALC_INTERVAL ticks via tickNeeds().
-//  - Dynamic Task Assignment: assignTasks() sets entity.currentTask.
-//  - Agrarian Shift: farm plot designation once techPoints threshold met.
-//  - EntityTask type, NeedsMatrix interface, agriUnlocked / farmPlots /
-//    foodCrisisTicks / needs fields added to Settlement.
 // ============================================================
 
 import { World } from '../world/World';

@@ -446,7 +446,7 @@ export function behaviourGather(ctx: BehaviourContext): BehaviourResult {
           } else {
             entity.carryingFood += extracted;
             if (entity.carryingFood >= ENTITY.CARRY_CAPACITY) entity.memory.returning = true;
-            return { eat: extracted * 0.45 };
+            return { eat: extracted * 0.15 };
           }
         }
       }

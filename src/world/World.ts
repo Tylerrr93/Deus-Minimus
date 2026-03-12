@@ -86,10 +86,9 @@ export class World {
     });
 
     // ── Food: reduced max and regen so it actually runs out under pressure ──
-    // Old: amount 2-5, max 8, regen 0.010
-    // New: amount 1-3, max 5, regen 0.004 (~2.5× slower recovery)
+    //amount 1-3, max 5, regen 0.004
     if (type === 'plains') {
-      resources.push(makeRes('food', 1 + rng * 2, 5, 0.004));
+      resources.push(makeRes('food', 1 + rng * 2, 5, 0.0004));
     }
     if (type === 'forest') {
       // Forest is slightly richer than plains but still scarce
